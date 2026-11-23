@@ -1,0 +1,21 @@
+{
+  "name": "@rummy/mobile",
+  "version": "1.0.0",
+  "description": "Multiplayer Indian Rummy Mobile Client (Android & iOS)",
+  "main": "index.js",
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "ios": "react-native run-ios"
+  },
+  "dependencies": {
+    "@rummy/card-assets": "*",
+    "@rummy/game-engine": "*",
+    "@rummy/shared-types": "*",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.1",
+    "typescript": "^5.4.5"
+  }
+}

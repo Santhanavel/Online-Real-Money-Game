@@ -1,0 +1,33 @@
+{
+  "name": "online-real-money-game",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multiplayer Indian Rummy Gaming Platform (Points & Pool Rummy)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev:server": "npm --workspace=apps/server run start:dev",
+    "dev:web": "npm --workspace=apps/web run dev",
+    "test:engine": "npm --workspace=packages/game-engine test"
+  },
+  "keywords": [
+    "rummy",
+    "indian-rummy",
+    "points-rummy",
+    "pool-rummy",
+    "multiplayer",
+    "game-engine"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
