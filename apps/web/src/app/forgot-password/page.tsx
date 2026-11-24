@@ -32,7 +32,7 @@ export default function ForgotPasswordPage() {
 
     setIsLoading(true);
     try {
-      const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
+      const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || '';
       const res = await fetch(`${serverUrl}/api/auth/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -51,7 +51,7 @@ export default function ForgotPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 lobby-theme text-white">
+    <div className="min-h-screen flex items-center justify-center p-4 auth-screen lobby-theme text-white">
       <div className="w-full max-w-md bg-[#250408]/90 backdrop-blur-xl border-2 border-[#961E28] rounded-3xl p-6 sm:p-8 shadow-[0_20px_50px_rgba(0,0,0,0.85)] relative overflow-hidden">
         {/* Subtle Brand Watermark */}
         <div className="absolute -top-10 -right-10 text-9xl text-white/[0.03] font-black pointer-events-none select-none">

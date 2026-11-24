@@ -48,6 +48,8 @@ interface GameSocketContextType {
   waitingTable: MatchmakingTableUpdatedPayload | null;
   matchmakingMessage: string | null;
   matchmakingCountdown: number | null;
+  resumableTableId: string | null;
+  returnToTable: () => void;
   activeTableId: string | null;
   activeTableConfig: TableConfig | null;
   lastDealResult: DealResult | null;
@@ -103,6 +105,7 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [matchmakingMessage, setMatchmakingMessage] = useState<string | null>(null);
   const [matchmakingCountdown, setMatchmakingCountdown] = useState<number | null>(null);
 
+  const [resumableTableId, setResumableTableId] = useState<string | null>(null);
   const [activeTableId, setActiveTableId] = useState<string | null>(null);
   const [activeTableConfig, setActiveTableConfig] = useState<TableConfig | null>(null);
   const [lastDealResult, setLastDealResult] = useState<DealResult | null>(null);
@@ -135,7 +138,7 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (!user.userId || !user.username) {
       const randNum = Math.floor(1000 + Math.random() * 9000);
       user = {
-        userId: `usr-${randNum}`,
+        userId: `guest-${Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-')}`,
         username: `Player_${randNum}`,
       };
       try {
@@ -145,36 +148,66 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setCurrentUser(user);
 
-    const serverUrl =
-      process.env.NEXT_PUBLIC_SERVER_URL ||
-      (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
-        ? window.location.origin
-        : 'http://localhost:4000');
+    const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || window.location.origin;
+    const keyName = `rummy_guest_key:${user.userId}`;
+    const guestKey = localStorage.getItem(keyName) || Array.from(crypto.getRandomValues(new Uint8Array(24)), n => n.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(keyName, guestKey);
     const s = io(serverUrl, {
+      addTrailingSlash: !!process.env.NEXT_PUBLIC_SERVER_URL,
       auth: {
+        token: localStorage.getItem('rummy_token'),
+        guestKey,
         playerId: user.userId,
         username: user.username,
       },
-      reconnectionAttempts: 15,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
     });
 
     s.on('connect', () => {
       setIsConnected(true);
-      if (activeTableId) {
-        s.emit('game:reconnect', { tableId: activeTableId });
+      const savedTableId = sessionStorage.getItem('rummy_active_table');
+      const routeTableId = window.location.pathname.startsWith('/game/') ? window.location.pathname.split('/')[2] : null;
+      if (savedTableId || routeTableId) {
+        s.emit('game:reconnect', { tableId: savedTableId ?? routeTableId });
       } else {
         // Only reconnect matchmaking if explicitly initiated in this browser session
         const wasInMatchmaking = typeof window !== 'undefined' && sessionStorage.getItem('rummy_in_matchmaking') === 'true';
         if (wasInMatchmaking) {
           s.emit('matchmaking:reconnect');
         } else {
-          // Explicitly clear any dangling previous queue on server so player starts fresh in lobby
-          s.emit('matchmaking:leave');
-          setIsSearching(false);
-          setMatchmakingUiState('IDLE');
+          s.emit('game:discover');
         }
       }
+    });
+
+    s.on('matchmaking:reservation_available', () => {
+      sessionStorage.setItem('rummy_in_matchmaking', 'true');
+      s.emit('matchmaking:reconnect');
+    });
+
+    s.on('game:seat_transferred', () => {
+      sessionStorage.removeItem('rummy_active_table');
+      window.location.replace('/');
+    });
+
+    s.on('game:resume_available', ({ tableId }: { tableId: string | null }) => {
+      if (tableId && sessionStorage.getItem('rummy_in_matchmaking') === 'true') {
+        s.emit('game:reconnect', { tableId });
+        return;
+      }
+      setResumableTableId(tableId);
+    });
+
+    s.on('game:session_missing', () => {
+      setResumableTableId(null);
+      sessionStorage.removeItem('rummy_active_table');
+      s.emit('game:discover');
+      sessionStorage.removeItem('rummy_in_matchmaking');
+      setActiveTableId(null);
+      setActiveTableConfig(null);
+      setPublicState(null);
+      if (window.location.pathname.startsWith('/game/')) window.location.assign('/');
     });
 
     s.on('disconnect', () => {
@@ -198,12 +231,12 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (payload.message) setMatchmakingMessage(payload.message);
       if (payload.countdownSec !== undefined) setMatchmakingCountdown(payload.countdownSec);
 
-      if (['SEARCHING', 'PLAYERS_JOINING', 'MATCH_FOUND', 'PREPARING'].includes(payload.state)) {
+      if (['SEARCHING', 'PLAYERS_JOINING', 'MATCH_FOUND', 'START_COUNTDOWN', 'PREPARING'].includes(payload.state)) {
         setIsSearching(true);
       } else if (payload.state === 'STARTED') {
         if (typeof window !== 'undefined') sessionStorage.removeItem('rummy_in_matchmaking');
         setTimeout(() => setIsSearching(false), 800);
-      } else if (['CANCELLED', 'EXPIRED', 'FAILED'].includes(payload.state)) {
+      } else if (['IDLE', 'CANCELLED', 'EXPIRED', 'FAILED'].includes(payload.state)) {
         if (typeof window !== 'undefined') sessionStorage.removeItem('rummy_in_matchmaking');
         setIsSearching(false);
         setMatchmakingUiState('IDLE');
@@ -274,6 +307,9 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     });
 
     s.on('table:joined', (data: { tableId: string; config: TableConfig }) => {
+      setResumableTableId(null);
+      sessionStorage.setItem('rummy_active_table', data.tableId);
+      sessionStorage.removeItem('rummy_in_matchmaking');
       setIsSearching(false);
       setMatchmakingUiState('IDLE');
       setActiveTableId(data.tableId);
@@ -290,6 +326,7 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     s.on('game:state', (state: PublicGameState) => {
       setPublicState(state);
+      setHasSubmittedHand(!!state.players.find(p => p.playerId === user.userId)?.hasSubmittedHand);
       if (state.declarationInfo) {
         setDeclarationInfo(state.declarationInfo);
       }
@@ -297,9 +334,7 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     s.on('game:my_hand', (data: { myHand: Card[]; myGroups: CardGroup[] }) => {
       setMyHand(data.myHand);
-      if (data.myGroups && data.myGroups.length > 0) {
-        setMyGroups(data.myGroups);
-      }
+      setMyGroups(data.myGroups || []);
     });
 
     s.on('game:card_drawn', (data: { card: Card; source: 'CLOSED_DECK' | 'OPEN_DISCARD' }) => {
@@ -503,53 +538,55 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   };
 
   const drawCard = (source: 'CLOSED_DECK' | 'OPEN_DISCARD') => {
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('game:draw', { tableId: activeTableId, source });
   };
 
   const discardCard = (cardId: string) => {
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('game:discard', { tableId: activeTableId, cardId });
   };
 
   const dropDeal = () => {
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('game:drop', { tableId: activeTableId });
   };
 
   const declareHand = (finishCardId: string, groups: { cards: Card[] }[]) => {
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('game:declare', { tableId: activeTableId, finishCardId, groups });
   };
 
   const submitArrangedHand = (groups: CardGroup[]) => {
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('game:submit_arranged_hand', { tableId: activeTableId, groups });
     setHasSubmittedHand(true);
   };
 
   const groupCards = (groups: CardGroup[]) => {
     setMyGroups(groups);
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('game:group_cards', { tableId: activeTableId, groups });
   };
 
   const requestSplit = () => {
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('split:request', { tableId: activeTableId });
   };
 
   const voteSplit = (accept: boolean) => {
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('split:vote', { tableId: activeTableId, accept });
   };
 
   const requestReentry = () => {
-    if (!socket || !activeTableId) return;
+    if (!socket?.connected || !activeTableId) return;
     socket.emit('pool:reentry', { tableId: activeTableId });
   };
 
   const resetGame = () => {
+    sessionStorage.removeItem('rummy_active_table');
+    sessionStorage.removeItem('rummy_in_matchmaking');
     setActiveTableId(null);
     setActiveTableConfig(null);
     setPublicState(null);
@@ -590,6 +627,8 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         waitingTable,
         matchmakingMessage,
         matchmakingCountdown,
+        resumableTableId,
+        returnToTable: () => { if (resumableTableId) socket?.emit('game:reconnect', { tableId: resumableTableId }); },
         activeTableId,
         activeTableConfig,
         lastDealResult,

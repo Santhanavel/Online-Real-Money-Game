@@ -837,7 +837,7 @@ export class MatchmakingService {
                     : 'PLAYERS_JOINING',
                 ticket: t,
                 table: this.formatTablePayload(table, t.ticketId),
-                countdownSec: eventPayload.countdownSec !== undefined ? eventPayload.countdownSec : undefined,
+                countdownSec: eventPayload.countdownSec ?? undefined,
                 gameStartsAt: table.gameStartsAt,
                 matchmakingDeadline: table.matchmakingDeadline,
                 canLeave: !(
@@ -1059,6 +1059,12 @@ export class MatchmakingService {
    * 5. RECONNECTION
    * Re-associates a reconnected socket with their active reservation
    */
+  public hasWaitingSeat(playerId: string): boolean {
+    const ticketId = this.playerToTicketMap.get(playerId);
+    const ticket = ticketId ? this.activeTickets.get(ticketId) : undefined;
+    return ticket?.ticketStatus === 'QUEUED' || ticket?.ticketStatus === 'RESERVED';
+  }
+
   public reconnectPlayer(playerId: string, newSocketId: string): MatchmakingStatusPayload {
     const ticketId = this.playerToTicketMap.get(playerId);
     if (!ticketId) {
@@ -1076,6 +1082,8 @@ export class MatchmakingService {
         message: 'Matchmaking ticket expired. Please join a new table.',
       };
     }
+
+    if (ticket.ticketStatus === 'STARTED') return { state: 'IDLE', message: 'Matchmaking has finished' };
 
     ticket.socketId = newSocketId;
     ticket.lastHeartbeatAt = Date.now();

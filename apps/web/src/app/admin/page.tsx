@@ -12,7 +12,7 @@ export default function AdminPage() {
   const [mmStats, setMmStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
+  const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || '';
 
   const fetchData = async () => {
     try {

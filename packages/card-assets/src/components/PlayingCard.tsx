@@ -68,11 +68,22 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
   return (
     <div
       onClick={!isDisabled ? onClick : undefined}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick && !isDisabled ? 0 : undefined}
+      aria-label={onClick ? `${card.isPrintedJoker ? 'Printed joker' : `${card.rank} of ${card.suit.toLowerCase()}`}${isWildJoker ? ', wild joker' : ''}` : undefined}
+      aria-pressed={onClick ? isSelected : undefined}
+      onKeyDown={event => {
+        if (onClick && !isDisabled && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       style={{
         width: `${dims.width}px`,
         height: `${dims.height}px`,
+        backgroundImage: 'linear-gradient(145deg, #fff 35%, #f6f2e9)',
         cursor: isDisabled ? 'not-allowed' : onClick ? 'pointer' : 'default',
-        transform: isSelected ? 'translateY(-10px)' : isNewlyPicked ? 'translateY(-4px)' : 'translateY(0)',
+        transform: isSelected ? 'translateY(-7px)' : isNewlyPicked ? 'translateY(-4px)' : 'translateY(0)',
         boxShadow: isSelected
           ? '0 6px 14px rgba(245, 158, 11, 0.45), 0 0 0 2px #F59E0B'
           : isNewlyPicked
@@ -81,7 +92,7 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
         opacity: isDisabled ? 0.4 : isDragging ? 0.7 : 1,
       }}
       className={`relative select-none bg-white rounded-xl transition-all duration-200 ease-out border border-slate-300/80 overflow-hidden ${
-        isNewlyPicked ? 'animate-pulse' : ''
+        isNewlyPicked ? 'ring-1 ring-sky-400' : ''
       } ${className}`}
     >
       {/* Subtle card sheen */}

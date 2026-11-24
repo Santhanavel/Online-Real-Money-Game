@@ -138,6 +138,14 @@ export class TableManager {
     return this.playerToTableMap.get(playerId);
   }
 
+  public getResumableTable(playerId: string): GameTableSession | undefined {
+    const tableId = this.playerToTableMap.get(playerId);
+    const session = tableId ? this.activeTables.get(tableId) : undefined;
+    if (!session?.pointsEngine || session.pointsEngine.tableStatus === 'COMPLETED' || session.poolEngine?.isCompleted) return undefined;
+    if (session.poolEngine?.players.find(player => player.playerId === playerId)?.isEliminated) return undefined;
+    return session;
+  }
+
   /**
    * Turn timer loop with auto-timeout
    */
@@ -158,7 +166,7 @@ export class TableManager {
     const activePlayer = session.players.find((p) => p.seatIndex === activeSeat);
     if (!activePlayer) return;
 
-    const timeoutMs = session.config.turnDurationSec * 1000;
+    const timeoutMs = Math.max(0, (currentEngine.turnExpiresAt ?? Date.now()) - Date.now());
 
     session.timerHandle = setTimeout(() => {
       this.handlePlayerTimeout(session.tableId, activePlayer.playerId);
@@ -172,7 +180,7 @@ export class TableManager {
     try {
       session.pointsEngine.handleTimeout(playerId);
 
-      if (session.pointsEngine.tableStatus === 'DEAL_OVER') {
+      if (session.pointsEngine.getPublicState().tableStatus === 'DEAL_OVER') {
         this.handleDealOver(session);
       } else {
         this.resetTurnTimer(session);
@@ -237,7 +245,7 @@ export class TableManager {
     const dropType = session.pointsEngine.drop(playerId);
     session.lastActionAt = Date.now();
 
-    if (session.pointsEngine.tableStatus === 'DEAL_OVER') {
+    if (session.pointsEngine.getPublicState().tableStatus === 'DEAL_OVER') {
       this.handleDealOver(session);
     } else {
       this.resetTurnTimer(session);
@@ -285,7 +293,7 @@ export class TableManager {
       if (this.onEmitEvent && result.declarationInfo) {
         this.onEmitEvent(session.tableId, 'game:hand_declared_arrange', result.declarationInfo);
       }
-    } else if (session.pointsEngine.tableStatus === 'DEAL_OVER') {
+    } else if (session.pointsEngine.getPublicState().tableStatus === 'DEAL_OVER') {
       this.handleDealOver(session);
     } else {
       this.resetTurnTimer(session);
@@ -348,7 +356,7 @@ export class TableManager {
     if (!session || !session.pointsEngine) return;
 
     const player = session.pointsEngine.players.find((p) => p.playerId === playerId);
-    if (player) {
+    if (player?.status === 'ACTIVE' && ['IN_PROGRESS', 'ARRANGE_HAND'].includes(session.pointsEngine.tableStatus)) {
       player.groups = groups;
       this.broadcastState(session);
     }
@@ -746,9 +754,9 @@ export class TableManager {
   /**
    * Handle player reconnection
    */
-  public handlePlayerReconnect(playerId: string, newSocketId: string): GameTableSession | null {
+  public handlePlayerReconnect(playerId: string, newSocketId: string, expectedTableId?: string): GameTableSession | null {
     const tableId = this.playerToTableMap.get(playerId);
-    if (!tableId) return null;
+    if (!tableId || (expectedTableId && tableId !== expectedTableId)) return null;
 
     const session = this.activeTables.get(tableId);
     if (!session) return null;

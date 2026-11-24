@@ -85,6 +85,8 @@ export interface PlayerPublicInfo {
   dealScore: number;
   totalPoolScore: number;
   hasDropped: boolean;
+  turnsPlayed?: number;
+  hasDrawnInCurrentTurn?: boolean;
   dropType?: 'FIRST' | 'MIDDLE' | 'TIMEOUT';
   isTurn: boolean;
   turnRemainingSec?: number;
@@ -106,6 +108,7 @@ export interface PublicGameState {
   variant: GameVariant;
   tableStatus: TableStatus;
   activePlayerSeat: number | null;
+  dealerSeatIndex?: number;
   turnPhase: 'DRAW' | 'DISCARD' | 'DECLARATION' | 'ENDED';
   turnExpiresAt: number | null;
   closedDeckCount: number;

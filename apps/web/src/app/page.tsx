@@ -8,7 +8,7 @@ import { useGameSocket } from '../context/GameSocketContext';
 import { GameTable } from '../components/GameTable';
 
 export default function LobbyPage() {
-  const { activeTableId, currentUser, joinMatchmaking } = useGameSocket();
+  const { activeTableId, resumableTableId, returnToTable, isConnected, currentUser, joinMatchmaking } = useGameSocket();
   const pathname = usePathname();
 
   // Splash screen state (Screen 1 from Master Sheet)
@@ -163,6 +163,10 @@ export default function LobbyPage() {
   return (
     <div className="w-full min-h-[calc(100vh-56px)] lobby-theme text-white flex flex-col justify-between pb-16 lg:pb-6 select-none">
       <div className="max-w-5xl mx-auto w-full px-3 sm:px-6 pt-4 sm:pt-6">
+        {resumableTableId && <div className="flex items-center justify-between gap-4 mb-4 p-4 rounded-xl bg-[#310609] border border-amber-400/50">
+          <span>Your table is still in progress.</span>
+          <button disabled={!isConnected} onClick={returnToTable} className="gold-btn-gradient rounded-lg px-5 py-2 font-bold">Return to table</button>
+        </div>}
         {/* SCREEN 5: HOME / MAIN LOBBY */}
         {currentScreen === 'LOBBY' && (
           <div className="space-y-6 animate-fade-in">
@@ -191,7 +195,7 @@ export default function LobbyPage() {
                     </span>
                   </div>
                   <span className="text-xs text-amber-200/60 font-semibold block mt-0.5">
-                    10,000 Practice Chips • 100% Fair Play RNG
+                    Practice table lobby
                   </span>
                 </div>
               </div>
@@ -206,7 +210,7 @@ export default function LobbyPage() {
             </div>
 
             {/* 4 FEATURED GAME SELECTION CARDS (Screen 5 Master Sheet) */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className="lobby-variants grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
               {gameOptions.map((game) => {
                 const isPoints = game.id === 'POINTS';
 
@@ -256,12 +260,7 @@ export default function LobbyPage() {
                       </span>
                     </div>
 
-                    {/* Action Pill Button */}
-                    <div className="mt-3 w-full flex justify-center">
-                      <span className="text-[11px] font-black px-4 py-1 rounded-full uppercase tracking-wider bg-black/40 group-hover:bg-amber-400 group-hover:text-black text-amber-200/90 border border-white/10 transition shadow-sm">
-                        Play Now →
-                      </span>
-                    </div>
+
                   </button>
                 );
               })}
@@ -381,9 +380,9 @@ export default function LobbyPage() {
                         <button
                           key={amt}
                           onClick={() => setSelectedEntryAmount(amt as EntryAmount)}
-                          className={`py-3 px-2 rounded-2xl flex flex-col items-center justify-center transition-all cursor-pointer ${
+                          className={`py-2 px-2 rounded-lg flex flex-col items-center justify-center transition-all cursor-pointer ${
                             isSelected
-                              ? 'gold-btn-gradient scale-105 border-2 border-white shadow-lg'
+                              ? 'bg-[#65200c] text-amber-100 border-2 border-amber-300 shadow-[0_0_10px_#fbbf2466]'
                               : 'bg-[#180306] text-amber-200/80 hover:bg-[#250408] border border-amber-400/30'
                           }`}
                         >
@@ -403,9 +402,9 @@ export default function LobbyPage() {
                         <button
                           key={amt}
                           onClick={() => setSelectedEntryAmount(amt as EntryAmount)}
-                          className={`py-3 px-2 rounded-2xl flex flex-col items-center justify-center transition-all cursor-pointer ${
+                          className={`py-2 px-2 rounded-lg flex flex-col items-center justify-center transition-all cursor-pointer ${
                             isSelected
-                              ? 'gold-btn-gradient scale-105 border-2 border-white shadow-lg'
+                              ? 'bg-[#65200c] text-amber-100 border-2 border-amber-300 shadow-[0_0_10px_#fbbf2466]'
                               : 'bg-[#180306] text-amber-200/80 hover:bg-[#250408] border border-amber-400/30'
                           }`}
                         >

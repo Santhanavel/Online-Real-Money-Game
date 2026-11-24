@@ -80,17 +80,10 @@ export const MatchmakingModal: React.FC = () => {
 
   const tableIdShort = waitingTable?.tableId ? `#${waitingTable.tableId.slice(-7)}` : '#1603163';
 
-  // 6 Seat positions around concentric radar circles
-  const radarSeats = Array.from({ length: capacity }, (_, i) => {
-    const seat = seats[i];
-    return {
-      seatIndex: i,
-      isOccupied: !!seat?.isOccupied,
-      username: seat?.username || (i === 0 ? currentUser.username : `Player ${i + 1}`),
-      avatarUrl: seat?.avatarUrl || (seat?.isOccupied ? `https://api.dicebear.com/7.x/bottts/svg?seed=${seat?.username || i}` : undefined),
-      isMe: seat?.playerId === currentUser.userId || (i === 0 && !seat),
-    };
-  });
+  const joinedSeats = seats.filter(seat => seat.isOccupied);
+  const waitingProfiles = joinedSeats.some(seat => seat.playerId === currentUser.userId)
+    ? joinedSeats
+    : [{ playerId: currentUser.userId, username: currentUser.username, avatarUrl: undefined }, ...joinedSeats];
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-between bg-[#0a0b0f] select-none overflow-hidden animate-fade-in p-1 sm:p-2">
@@ -143,7 +136,7 @@ export const MatchmakingModal: React.FC = () => {
           />
           <span className="relative z-10 text-[11px] sm:text-xs font-black text-amber-200 tracking-wide">
             {isCountingDown
-              ? `🚀 Game starting in ${remainingStartSec} seconds...`
+              ? `Game starting in ${remainingStartSec} seconds...`
               : `This game should start in ${remainingWaitSec} seconds`}
           </span>
         </div>
@@ -151,7 +144,7 @@ export const MatchmakingModal: React.FC = () => {
 
       {/* 3. CASINO GREEN STADIUM FELT TABLE (WAITING RADAR) */}
       <div className="w-full flex-1 flex items-center justify-center overflow-x-auto overflow-y-hidden py-1">
-        <div className="relative w-full max-w-6xl min-w-[740px] sm:min-w-[860px] md:min-w-[960px] min-h-[480px] sm:min-h-[520px] rounded-[70px] sm:rounded-[120px] md:rounded-[150px] bg-[radial-gradient(ellipse_at_center,_#166a39_0%,_#0f4c27_50%,_#083119_80%,_#03190c_100%)] border-[8px] sm:border-[12px] border-[#7a4c16] shadow-[inset_0_0_100px_rgba(0,0,0,0.85),_0_0_0_3px_rgba(240,185,50,0.5),_0_25px_60px_rgba(0,0,0,0.95)] flex flex-col justify-between p-3 relative overflow-hidden select-none">
+        <div className="relative w-full max-w-6xl waiting-felt rounded-[70px] sm:rounded-[120px] md:rounded-[150px] bg-[radial-gradient(ellipse_at_center,_#166a39_0%,_#0f4c27_50%,_#083119_80%,_#03190c_100%)] border-[8px] sm:border-[12px] border-[#7a4c16] shadow-[inset_0_0_100px_rgba(0,0,0,0.85),_0_0_0_3px_rgba(240,185,50,0.5),_0_25px_60px_rgba(0,0,0,0.95)] flex flex-col justify-between p-3 relative overflow-hidden select-none">
           {/* Golden Inset Ring */}
           <div className="absolute inset-2 sm:inset-3 rounded-[60px] sm:rounded-[110px] md:rounded-[140px] border border-amber-400/25 pointer-events-none" />
 
@@ -204,108 +197,16 @@ export const MatchmakingModal: React.FC = () => {
               </div>
             </div>
           ) : (
-            /* CENTER CONCENTRIC GLOWING RADAR RINGS MATCHING RUMMYCULTURE SHEET 0 */
-            <div className="relative z-20 m-auto flex items-center justify-center">
-              {/* Outer Glowing Ring */}
-              <div className="relative w-72 h-72 sm:w-84 sm:h-84 md:w-96 md:h-96 rounded-full border border-emerald-400/30 flex items-center justify-center shadow-[0_0_60px_rgba(16,185,129,0.15)]">
-                {/* Inner Concentric Ring */}
-                <div className="w-48 h-48 sm:w-56 sm:h-56 md:w-64 md:h-64 rounded-full border border-emerald-400/50 flex items-center justify-center relative">
-                  {/* Rotating Radar Sweep Line */}
-                  <div
-                    className="absolute inset-0 rounded-full border-t border-emerald-400/80 pointer-events-none animate-spin"
-                    style={{ animationDuration: '3s' }}
-                  />
-
-                  {/* Central Radar Hub */}
-                  <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-[#052614] border-2 border-emerald-400/80 shadow-[0_0_30px_rgba(16,185,129,0.4)] flex flex-col items-center justify-center text-center p-2">
-                    {isCountingDown ? (
-                      <div className="flex flex-col items-center animate-bounce">
-                        <span className="text-2xl sm:text-3xl font-black text-amber-300 font-mono">
-                          {remainingStartSec}
-                        </span>
-                        <span className="text-[9px] font-black text-amber-200 uppercase">STARTING</span>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center">
-                        <span className="text-xl sm:text-2xl font-black text-emerald-300 font-mono">
-                          {occupiedCount}/{capacity}
-                        </span>
-                        <span className="text-[8px] sm:text-[9px] font-bold text-amber-200/90 uppercase tracking-tight">
-                          PLAYERS
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 6 Radar Avatar Satellites Placed Around the Circle */}
-                {radarSeats.map((sat, idx) => {
-                  const angle = (idx * (360 / capacity) - 90) * (Math.PI / 180);
-                  const radius = 145; // Pixel distance from center
-                  const leftPos = `calc(50% + ${Math.cos(angle) * radius}px - 28px)`;
-                  const topPos = `calc(50% + ${Math.sin(angle) * radius}px - 28px)`;
-
-                  return (
-                    <div
-                      key={sat.seatIndex}
-                      className="absolute z-30 flex flex-col items-center transition-all duration-300"
-                      style={{ left: leftPos, top: topPos }}
-                    >
-                      <div
-                        className={`w-14 h-14 rounded-full border-2 flex flex-col items-center justify-center overflow-hidden shadow-xl transition-all duration-300 ${
-                          sat.isOccupied
-                            ? 'border-amber-400 bg-slate-900 shadow-amber-400/40 ring-2 ring-emerald-500/50 scale-105'
-                            : 'border-dashed border-emerald-400/70 bg-emerald-950/60 shadow-[0_0_15px_rgba(16,185,129,0.3)] animate-pulse'
-                        }`}
-                      >
-                        {sat.isOccupied ? (
-                          <img
-                            src={sat.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${sat.username}`}
-                            alt={sat.username}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex flex-col items-center justify-center text-center">
-                            <span className="text-sm">🪑</span>
-                            <span className="text-[7px] font-black text-emerald-300 uppercase tracking-tighter leading-none mt-0.5">
-                              SIT
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                      <span
-                        className={`text-[9px] sm:text-[10px] font-black mt-1 px-2 py-0.2 rounded-full truncate max-w-[76px] ${
-                          sat.isOccupied
-                            ? sat.isMe
-                              ? 'bg-amber-400 text-slate-950 font-black shadow'
-                              : 'bg-black/70 text-emerald-200 border border-emerald-500/40'
-                            : 'bg-emerald-950/80 text-emerald-300/90 border border-emerald-500/30'
-                        }`}
-                      >
-                        {sat.isOccupied ? (sat.isMe ? 'You' : sat.username) : 'SIT HERE'}
-                      </span>
-                    </div>
-                  );
-                })}
+            <div className="waiting-radar" aria-label={`${occupiedCount} of ${capacity} players joined`}>
+              <div className="waiting-profiles">
+                {waitingProfiles.map(profile => (
+                  <img key={profile.playerId} alt={profile.username || 'Player'}
+                    title={profile.username || 'Player'}
+                    src={profile.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(profile.username || 'Player')}`} />
+                ))}
               </div>
             </div>
           )}
-
-          {/* Current User Bottom Rim Seat Placeholder */}
-          <div className="relative z-30 mt-auto flex flex-col items-center">
-            <div className="flex items-center gap-2">
-              <div className="w-12 h-12 rounded-full border-2 border-amber-400 bg-slate-900 overflow-hidden shadow-lg">
-                <img
-                  src={currentUser.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${currentUser.username}`}
-                  alt={currentUser.username}
-                  className="w-full h-full object-cover"
-                />
-              </div>
-            </div>
-            <div className="bg-[#052b17]/95 px-3 py-0.5 rounded-full border border-emerald-500/40 text-[10px] font-black text-white mt-1 shadow">
-              {currentUser.username} (You)
-            </div>
-          </div>
         </div>
       </div>
     </div>

@@ -11,7 +11,7 @@ export default function HistoryPage() {
   const [filter, setFilter] = useState<'ALL' | 'POINTS' | 'POOL_240' | 'POOL_101' | 'POOL_201'>('ALL');
 
   useEffect(() => {
-    const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
+    const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || '';
     fetch(`${serverUrl}/api/games/history/${currentUser.userId}`)
       .then((res) => res.json())
       .then((data) => {

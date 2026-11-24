@@ -2,11 +2,9 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useGameSocket } from '../../context/GameSocketContext';
 
 export default function ProfilePage() {
-  const router = useRouter();
   const { currentUser, setCurrentUser, isConnected } = useGameSocket();
   const [editingUsername, setEditingUsername] = useState(currentUser.username);
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -30,7 +28,9 @@ export default function ProfilePage() {
   const handleLogout = () => {
     localStorage.removeItem('rummy_token');
     localStorage.removeItem('rummy_player_profile');
-    router.push('/login');
+    sessionStorage.removeItem('rummy_active_table');
+    sessionStorage.removeItem('rummy_in_matchmaking');
+    window.location.assign('/login');
   };
 
   return (

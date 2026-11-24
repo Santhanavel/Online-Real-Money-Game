@@ -2,11 +2,9 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useGameSocket } from '../../context/GameSocketContext';
 
 export default function RegisterPage() {
-  const router = useRouter();
   const { setCurrentUser } = useGameSocket();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -43,7 +41,7 @@ export default function RegisterPage() {
 
     setIsLoading(true);
     try {
-      const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
+      const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || '';
       const res = await fetch(`${serverUrl}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -57,7 +55,7 @@ export default function RegisterPage() {
       const userObj = { userId: data.user.id, username: data.user.username };
       localStorage.setItem('rummy_player_profile', JSON.stringify(userObj));
       setCurrentUser(userObj);
-      router.push('/');
+      window.location.assign('/');
     } catch (err: any) {
       setError(err.message || 'Unable to connect to server');
     } finally {
@@ -66,7 +64,7 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 lobby-theme text-white">
+    <div className="min-h-screen flex items-center justify-center p-4 auth-screen lobby-theme text-white">
       <div className="w-full max-w-md bg-[#250408]/90 backdrop-blur-xl border-2 border-[#961E28] rounded-3xl p-6 sm:p-8 shadow-[0_20px_50px_rgba(0,0,0,0.85)] relative overflow-hidden">
         {/* Subtle Brand Watermark */}
         <div className="absolute -top-10 -right-10 text-9xl text-white/[0.03] font-black pointer-events-none select-none">
@@ -75,9 +73,7 @@ export default function RegisterPage() {
 
         {/* Brand Header (Screen 3 Master Sheet) */}
         <div className="text-center mb-6">
-          <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-[#FFE17D] via-[#F6BE36] to-[#B92730] flex items-center justify-center text-3xl shadow-xl border border-amber-200/50 mb-3">
-            👑
-          </div>
+          <div className="auth-spade" aria-hidden="true">♠</div>
           <h1 className="text-2xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-[#FFD96A] via-[#F6BE36] to-amber-200 tracking-wide uppercase">
             Rummy Royale
           </h1>

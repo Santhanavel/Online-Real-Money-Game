@@ -1,9 +1,11 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
+import { DatabaseService } from '../db/schema';
 import { AuthService } from '../auth/AuthService';
 import { MatchmakingService, QueuedPlayer } from '../matchmaking/MatchmakingService';
 import { GameTableSession, TableManager } from '../table/TableManager';
 
 export class GameGateway {
+  private guestKeys = new Map<string, string>();
   private io: SocketIOServer;
   private authService: AuthService;
   private matchmakingService: MatchmakingService;
@@ -112,6 +114,11 @@ export class GameGateway {
         if (!token) {
           // Allow guest token for dev/testing
           const guestId = (socket.handshake.auth?.playerId as string) || `guest-${socket.id.substring(0, 5)}`;
+          if (DatabaseService.getInstance().findUserById(guestId)) return next(new Error('Sign in to restore this account'));
+          const guestKey = socket.handshake.auth?.guestKey;
+          const savedKey = this.guestKeys.get(guestId);
+          if (savedKey && guestKey !== savedKey) return next(new Error('Guest session does not match'));
+          if (!savedKey && typeof guestKey === 'string' && guestKey.length >= 32) this.guestKeys.set(guestId, guestKey);
           const guestName = (socket.handshake.auth?.username as string) || `Player-${socket.id.substring(0, 4)}`;
           (socket as any).user = { userId: guestId, username: guestName, role: 'USER' };
           return next();
@@ -128,9 +135,25 @@ export class GameGateway {
     this.io.on('connection', (socket: Socket) => {
       const user = (socket as any).user;
 
+      socket.use(([event, data], next) => {
+        if (data?.tableId && /^(game|pool|split):/.test(event) && event !== 'game:reconnect') {
+          const seat = this.tableManager.getSession(data.tableId)?.players.find(p => p.playerId === user.userId);
+          if (seat?.socketId !== socket.id) {
+            socket.emit('error:action_rejected', { message: 'Return to your table before taking a turn.' });
+            return;
+          }
+        }
+        next();
+      });
+
       // 1. Join Matchmaking (Supports 'matchmaking:join', 'JOIN_MATCHMAKING', 'JOIN_TABLE', 'table:join')
       const handleJoin = (data: { variant: any; entryAmount?: number; pointValue?: number; maxPlayers: 2 | 6; configurationId?: string }) => {
         try {
+          const existing = this.tableManager.getResumableTable(user.userId);
+          if (existing) {
+            socket.emit('game:resume_available', { tableId: existing.tableId });
+            return;
+          }
           const entryAmount = Number(data.entryAmount) || 50;
           const queuedPlayer: QueuedPlayer = {
             playerId: user.userId,
@@ -201,6 +224,11 @@ export class GameGateway {
 
       // 2.3 Matchmaking Reconnect
       socket.on('matchmaking:reconnect', () => {
+        const active = this.tableManager.getResumableTable(user.userId);
+        if (active) {
+          socket.emit('game:resume_available', { tableId: active.tableId });
+          return;
+        }
         const res = this.matchmakingService.reconnectPlayer(user.userId, socket.id);
         if (res) {
           socket.emit('matchmaking:status', res);
@@ -284,13 +312,45 @@ export class GameGateway {
       });
 
       // 8. Reconnect
-      socket.on('game:reconnect', (data: { tableId?: string }) => {
+      socket.on('game:discover', () => {
+        const session = this.tableManager.getResumableTable(user.userId);
+        if (!session && this.matchmakingService.hasWaitingSeat(user.userId)) {
+          socket.emit('matchmaking:reservation_available');
+        } else {
+          socket.emit('game:resume_available', { tableId: session?.tableId ?? null });
+        }
+      });
+
+      socket.on('game:reconnect', (data?: { tableId?: string }) => {
         try {
-          const session = this.tableManager.handlePlayerReconnect(user.userId, socket.id);
+          const mapped = this.tableManager.getTableIdForPlayer(user.userId);
+          const previous = mapped && this.tableManager.getSession(mapped)?.players.find(p => p.playerId === user.userId)?.socketId;
+          const session = this.tableManager.handlePlayerReconnect(user.userId, socket.id, data?.tableId);
           if (session) {
+            if (previous && previous !== socket.id) {
+              const old = this.io.sockets.sockets.get(previous);
+              old?.leave(`table:${session.tableId}`);
+              old?.emit('game:seat_transferred');
+            }
             socket.join(`table:${session.tableId}`);
             socket.emit('table:joined', { tableId: session.tableId, config: session.config });
             this.broadcastTableState(session.tableId, session);
+            if (session.pointsEngine?.completedDealResult) {
+              socket.emit('deal:hands_revealed', { hands: session.pointsEngine.getRevealedHands() });
+              socket.emit('game:deal_ended', { dealResult: session.pointsEngine.completedDealResult });
+              if (session.poolEngine) socket.emit('scoreboard:updated', session.poolEngine.getScoreboard());
+              if (session.poolEngine && session.nextDealDeadline) socket.emit('deal:countdown_tick', {
+                tableId: session.tableId, dealNumber: session.poolEngine.currentDealNumber, startsAt: session.nextDealDeadline,
+                countdownSec: Math.max(0, Math.ceil((session.nextDealDeadline - Date.now()) / 1000)),
+                isPaused: !!session.poolEngine.activeSplitRequest,
+              });
+              if (session.poolEngine?.activeSplitRequest) socket.emit('split:requested', session.poolEngine.activeSplitRequest);
+              if (session.poolEngine?.finalResult) socket.emit('game:completed', {
+                dealResult: session.pointsEngine.completedDealResult, finalResult: session.poolEngine.finalResult,
+              });
+            }
+          } else {
+            socket.emit('game:session_missing');
           }
         } catch (err: any) {
           socket.emit('error:action_rejected', { action: 'reconnect', message: err.message });

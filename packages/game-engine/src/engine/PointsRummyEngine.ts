@@ -46,6 +46,7 @@ export class PointsRummyEngine {
   public config: TableConfig;
   public tableStatus: TableStatus;
   public activePlayerSeat: number | null;
+  public dealerSeatIndex: number = 0;
   public turnPhase: 'DRAW' | 'DISCARD' | 'DECLARATION' | 'ENDED';
   public turnExpiresAt: number | null;
 
@@ -114,6 +115,9 @@ export class PointsRummyEngine {
       throw new Error('Cannot start deal with fewer than 2 players');
     }
 
+    const startingIndex = this.players.findIndex(player => player.seatIndex === startingSeatIndex);
+    this.dealerSeatIndex = this.players[(startingIndex - 1 + this.players.length) % this.players.length].seatIndex;
+
     // 1. Create full deck
     const deckMgr = new DeckManager(
       this.config.deckCount || 2,
@@ -140,9 +144,7 @@ export class PointsRummyEngine {
         if (!card) throw new Error('Deck unexpectedly empty during deal');
         player.hand.push(card);
       }
-      // Initial suit sorting for clean UI presentation
-      player.hand = HandManager.sortBySuitAndRank(player.hand);
-      player.groups = HandManager.autoGroupCards(player.hand, null);
+      player.groups = [{ id: 'dealt-hand', cards: [...player.hand], meldType: 'INVALID', isValid: false }];
     }
 
     // 4. Cut wild joker card from top of closed deck
@@ -150,10 +152,6 @@ export class PointsRummyEngine {
     if (!cutCard) throw new Error('No card available to cut as wild joker');
     this.wildJokerCard = cutCard;
 
-    // Refresh player auto-groups with wild joker known
-    for (const player of this.players) {
-      player.groups = HandManager.autoGroupCards(player.hand, this.wildJokerCard);
-    }
 
     // 5. Open 1st discard card
     const firstDiscard = this.closedDeck.pop();
@@ -713,6 +711,8 @@ export class PointsRummyEngine {
       dealScore: p.dealScore,
       totalPoolScore: p.totalPoolScore,
       hasDropped: p.hasDropped,
+      turnsPlayed: p.turnsPlayed,
+      hasDrawnInCurrentTurn: p.hasDrawnInCurrentTurn,
       dropType: p.dropType,
       isTurn: p.seatIndex === this.activePlayerSeat,
       turnRemainingSec: this.turnExpiresAt
@@ -729,6 +729,7 @@ export class PointsRummyEngine {
       variant: this.variant,
       tableStatus: this.tableStatus,
       activePlayerSeat: this.activePlayerSeat,
+      dealerSeatIndex: this.dealerSeatIndex,
       turnPhase: this.turnPhase,
       turnExpiresAt: this.turnExpiresAt,
       closedDeckCount: this.closedDeck.length,

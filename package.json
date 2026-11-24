@@ -8,7 +8,7 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspace=@rummy/shared-types && npm run build --workspace=@rummy/card-assets && npm run build --workspace=@rummy/game-engine && npm run build --workspace=@rummy/server && npm run build --workspace=@rummy/web",
     "test": "npm run test --workspaces --if-present",
     "dev:server": "npm --workspace=apps/server run start:dev",
     "dev:web": "npm --workspace=apps/web run dev",
