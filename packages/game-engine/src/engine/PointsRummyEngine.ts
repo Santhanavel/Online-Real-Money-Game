@@ -2,6 +2,8 @@ import {
   Card,
   CardGroup,
   DealResult,
+  DeclarationInfo,
+  DeclarationResultPayload,
   GameVariant,
   PlayerPublicInfo,
   PlayerStatus,
@@ -9,6 +11,7 @@ import {
   ScoreItem,
   TableConfig,
   TableStatus,
+  RevealedPlayerHand,
 } from '@rummy/shared-types';
 import { DeckManager } from './DeckManager';
 import { DeclarationValidator } from './DeclarationValidator';
@@ -33,6 +36,7 @@ export interface InternalPlayerState {
   totalPoolScore: number;
   hasDropped: boolean;
   dropType?: DropClassification;
+  hasSubmittedHand?: boolean;
 }
 
 export class PointsRummyEngine {
@@ -60,6 +64,9 @@ export class PointsRummyEngine {
     source: 'CLOSED_DECK' | 'OPEN_DISCARD';
     timestamp: number;
   } | null = null;
+
+  public declarationInfo: DeclarationInfo | null = null;
+  public winnerPlayerId: string | null = null;
 
   constructor(
     config: TableConfig,
@@ -201,6 +208,18 @@ export class PointsRummyEngine {
       source,
       timestamp: Date.now(),
     };
+
+    // Synchronize player.groups with 14th drawn card
+    player.groups = [
+      ...player.groups,
+      {
+        id: `grp-drawn-${Date.now()}`,
+        cards: [drawnCard],
+        meldType: 'INVALID',
+        isValid: false,
+      },
+    ];
+
     this.turnPhase = 'DISCARD';
     this.turnExpiresAt = Date.now() + this.config.turnDurationSec * 1000;
     this.revision++;
@@ -225,6 +244,22 @@ export class PointsRummyEngine {
 
     const [discardedCard] = player.hand.splice(cardIndex, 1);
     this.openDiscardPile.push(discardedCard);
+
+    // Synchronize player.groups by removing discarded card and re-evaluating melds
+    player.groups = player.groups
+      .map((g) => ({
+        ...g,
+        cards: g.cards.filter((c) => c.cardId !== cardId),
+      }))
+      .filter((g) => g.cards.length > 0)
+      .map((g) => {
+        const evalRes = DeclarationValidator.evaluateGroup(g.cards, this.wildJokerCard);
+        return {
+          ...g,
+          meldType: evalRes.meldType,
+          isValid: evalRes.isValid,
+        };
+      });
 
     player.turnsPlayed++;
     player.hasDrawnInCurrentTurn = false;
@@ -289,7 +324,7 @@ export class PointsRummyEngine {
     playerId: string,
     finishCardId: string,
     declaredGroups: { cards: Card[] }[]
-  ): { isValid: boolean; reason?: string; dealResult?: DealResult } {
+  ): DeclarationResultPayload {
     const player = this.getActivePlayerOrThrow(playerId);
 
     if (this.turnPhase !== 'DISCARD') {
@@ -315,6 +350,7 @@ export class PointsRummyEngine {
     if (valResult.isValid) {
       // Valid Show! Player wins the deal!
       player.status = 'DECLARED';
+      player.hasSubmittedHand = true;
       player.groups = declaredGroups.map((g, idx) => {
         const ev = DeclarationValidator.evaluateGroup(g.cards, this.wildJokerCard);
         return {
@@ -325,9 +361,40 @@ export class PointsRummyEngine {
         };
       });
 
-      const dealResult = this.finishDealWithWinner(playerId);
+      this.winnerPlayerId = playerId;
+
+      // Check remaining active non-dropped players
+      const otherActivePlayers = this.getActivePlayers().filter((p) => p.playerId !== playerId);
+
+      if (otherActivePlayers.length === 0) {
+        // No opponents to arrange, conclude immediately
+        const dealResult = this.finishDealWithWinner(playerId);
+        this.revision++;
+        return { isValid: true, status: 'DEAL_OVER', dealResult };
+      }
+
+      // Transition to ARRANGE_HAND phase for opponents (15 seconds)
+      this.tableStatus = 'ARRANGE_HAND';
+      this.turnPhase = 'DECLARATION';
+      this.activePlayerSeat = null;
+      this.turnExpiresAt = null;
+
+      const arrangeDurationSec = 15;
+      const arrangeExpiresAt = Date.now() + arrangeDurationSec * 1000;
+
+      this.declarationInfo = {
+        winnerPlayerId: player.playerId,
+        winnerUsername: player.username,
+        arrangeExpiresAt,
+        arrangeDurationSec,
+      };
+
       this.revision++;
-      return { isValid: true, dealResult };
+      return {
+        isValid: true,
+        status: 'ARRANGE_HAND',
+        declarationInfo: this.declarationInfo,
+      };
     } else {
       // Wrong Show / Invalid Declaration!
       // Penalty: 80 points.
@@ -340,14 +407,95 @@ export class PointsRummyEngine {
         const winner = activePlayers[0] || player;
         const dealResult = this.finishDealWithWinner(winner.playerId);
         this.revision++;
-        return { isValid: false, reason: valResult.reason, dealResult };
+        return {
+          isValid: false,
+          errorCode: valResult.errorCode || 'INVALID_DECLARATION',
+          errorMessage: valResult.reason || 'Invalid declaration arrangement',
+          reason: valResult.reason,
+          missingRequirements: valResult.missingRequirements || [],
+          invalidGroupIndices: valResult.invalidGroupIndices || [],
+          invalidCardIds: valResult.invalidCardIds || [],
+          dealResult,
+          penaltyPoints: 80,
+        };
       } else {
         // Deal continues with remaining players
         this.advanceTurn();
         this.revision++;
-        return { isValid: false, reason: valResult.reason };
+        return {
+          isValid: false,
+          errorCode: valResult.errorCode || 'INVALID_DECLARATION',
+          errorMessage: valResult.reason || 'Invalid declaration arrangement',
+          reason: valResult.reason,
+          missingRequirements: valResult.missingRequirements || [],
+          invalidGroupIndices: valResult.invalidGroupIndices || [],
+          invalidCardIds: valResult.invalidCardIds || [],
+          penaltyPoints: 80,
+        };
       }
     }
+  }
+
+  /**
+   * Opponent submits arranged hand during 15s ARRANGE_HAND phase.
+   */
+  public submitArrangedHand(
+    playerId: string,
+    groups: CardGroup[]
+  ): { allSubmitted: boolean; dealResult?: DealResult } {
+    if (this.tableStatus !== 'ARRANGE_HAND') {
+      throw new Error('Not currently in arrange hand phase');
+    }
+
+    const player = this.players.find((p) => p.playerId === playerId);
+    if (!player) throw new Error(`Player ${playerId} not found`);
+
+    if (player.hasDropped || player.status === 'ELIMINATED') {
+      throw new Error('Player has already dropped or been eliminated');
+    }
+
+    if (groups && groups.length > 0) {
+      player.groups = groups.map((g, idx) => {
+        const ev = DeclarationValidator.evaluateGroup(g.cards, this.wildJokerCard);
+        return {
+          id: g.id || `submitted-${idx}`,
+          cards: g.cards,
+          meldType: ev.meldType,
+          isValid: ev.isValid,
+        };
+      });
+    }
+
+    player.hasSubmittedHand = true;
+    this.revision++;
+
+    // Check if all non-dropped, active opponents have submitted
+    const activeOpponents = this.players.filter(
+      (p) => !p.hasDropped && p.status !== 'ELIMINATED' && p.playerId !== this.winnerPlayerId
+    );
+    const allSubmitted = activeOpponents.every((p) => p.hasSubmittedHand);
+
+    if (allSubmitted && this.winnerPlayerId) {
+      const dealResult = this.finishDealWithWinner(this.winnerPlayerId);
+      return { allSubmitted: true, dealResult };
+    }
+
+    return { allSubmitted: false };
+  }
+
+  /**
+   * Concludes the 15-second arrange phase when timer fires or all submitted.
+   */
+  public concludeArrangePhase(): DealResult {
+    if (this.tableStatus !== 'ARRANGE_HAND') {
+      throw new Error('Table is not in arrange hand phase');
+    }
+    const winnerId =
+      this.winnerPlayerId ||
+      this.players.find((p) => p.status === 'DECLARED')?.playerId ||
+      this.players[0].playerId;
+
+    return this.finishDealWithWinner(winnerId);
   }
 
   /**
@@ -427,10 +575,12 @@ export class PointsRummyEngine {
    * Concludes deal and calculates scores for all participants.
    */
   private finishDealWithWinner(winnerPlayerId: string): DealResult {
+    this.winnerPlayerId = winnerPlayerId;
     this.tableStatus = 'DEAL_OVER';
     this.turnPhase = 'ENDED';
     this.activePlayerSeat = null;
     this.turnExpiresAt = null;
+    this.declarationInfo = null;
 
     const scores: ScoreItem[] = [];
 
@@ -570,6 +720,7 @@ export class PointsRummyEngine {
         : 0,
       consecutiveTimeouts: p.consecutiveTimeouts,
       isWinner: this.completedDealResult?.winnerPlayerId === p.playerId,
+      hasSubmittedHand: !!p.hasSubmittedHand || p.status === 'DECLARED',
     }));
 
     return {
@@ -586,6 +737,7 @@ export class PointsRummyEngine {
       turnHistoryCount: this.turnHistoryCount,
       revision: this.revision,
       players: publicPlayers,
+      declarationInfo: this.declarationInfo,
       nextRoundStartsAt: this.nextRoundStartsAt,
       lastDrawnEvent: this.lastDrawnEvent,
     };
@@ -604,5 +756,45 @@ export class PointsRummyEngine {
       myHand: player ? player.hand : [],
       myGroups: player ? player.groups : [],
     };
+  }
+
+  /**
+   * Extracts verified revealed hands for all participants at deal conclusion.
+   * Can ONLY be called after deal completion ('DEAL_OVER' or 'COMPLETED').
+   */
+  public getRevealedHands(): RevealedPlayerHand[] {
+    if (this.tableStatus !== 'DEAL_OVER' && this.tableStatus !== 'COMPLETED') {
+      throw new Error('Hands can only be revealed after deal completion');
+    }
+
+    return this.players.map((p) => {
+      const isWinner = p.playerId === this.winnerPlayerId;
+      const groups = p.groups && p.groups.length > 0 ? p.groups : HandManager.autoGroupCards(p.hand, this.wildJokerCard);
+      const groupedCardIds = new Set(groups.flatMap((g) => g.cards.map((c) => c.cardId)));
+      const unmatchedCards = p.hand.filter((c) => !groupedCardIds.has(c.cardId));
+
+      const pureSequences = groups.filter((g) => g.meldType === 'PURE_SEQUENCE' && g.isValid).length;
+      const sequences = groups.filter((g) => (g.meldType === 'IMPURE_SEQUENCE' || g.meldType === 'PURE_SEQUENCE') && g.isValid).length;
+      const sets = groups.filter((g) => g.meldType === 'SET' && g.isValid).length;
+
+      return {
+        playerId: p.playerId,
+        username: p.username,
+        avatarUrl: p.avatarUrl,
+        cards: [...p.hand],
+        groups: JSON.parse(JSON.stringify(groups)),
+        unmatchedCards,
+        dealPenalty: p.dealScore ?? 0,
+        totalPoolScore: p.totalPoolScore ?? 0,
+        isWinner,
+        isEliminated: p.status === 'ELIMINATED',
+        meldsSummary: {
+          pureSequences,
+          sequences,
+          sets,
+          hasValidShow: isWinner,
+        },
+      };
+    });
   }
 }

@@ -9,18 +9,34 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        table: {
-          felt: '#0a3d2e',
-          feltDark: '#06281e',
-          feltLight: '#0d4a38',
-          border: '#145a44',
-          rail: '#2e1c0c',
+        // Lobby Design System (Deep Burgundy & Red RummyCulture Palette)
+        rc: {
+          bg: '#650D16',
+          bgDeep: '#37070D',
+          redSec: '#8D1420',
+          redHigh: '#B92730',
+          gold: '#F6BE36',
+          goldHigh: '#FFD96A',
+          greenAction: '#159A43',
+          greenActionHover: '#118237',
+          surface: '#FFFFFF',
+          textMain: '#FFFFFF',
+          textDark: '#262020',
+          redBorder: '#961E28',
         },
-        gold: {
-          light: '#fde047',
-          DEFAULT: '#f59e0b',
-          dark: '#b45309',
-          glow: 'rgba(245, 158, 11, 0.4)',
+        // Gameplay Design System (Dark Header & Green Oval Playing Table)
+        game: {
+          header: '#111414',
+          bgSec: '#171B1B',
+          tableFelt: '#087B3B',
+          tableCenter: '#075C30',
+          tableEdge: '#1B2821',
+          cardBg: '#FFFFFF',
+          cardText: '#171717',
+          suitRed: '#E5232A',
+          suitBlack: '#151515',
+          timerActive: '#26D84C',
+          playerInactive: '#A4AAA7',
         },
       },
     },

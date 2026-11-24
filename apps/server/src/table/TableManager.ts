@@ -26,6 +26,11 @@ export interface GameTableSession {
   poolEngine?: PoolRummyEngine;
   players: ConnectedPlayer[];
   timerHandle?: NodeJS.Timeout;
+  arrangeTimerHandle?: NodeJS.Timeout;
+  nextDealTimerHandle?: NodeJS.Timeout;
+  nextDealDeadline?: number;
+  nextDealRemainingMs?: number;
+  splitTimerHandle?: NodeJS.Timeout;
   lastActionAt: number;
 }
 
@@ -90,7 +95,7 @@ export class TableManager {
       );
       session.pointsEngine.startDeal(0);
     } else {
-      // Pool 101 or 201
+      // Pool 240, Pool 101 or Pool 201
       session.poolEngine = new PoolRummyEngine(
         config,
         connectedPlayers.map((p) => ({
@@ -185,6 +190,10 @@ export class TableManager {
     const session = this.activeTables.get(tableId);
     if (!session || !session.pointsEngine) throw new Error('Game session not found');
 
+    if (session.poolEngine?.isCompleted || session.pointsEngine.tableStatus === 'COMPLETED' || session.pointsEngine.tableStatus === 'DEAL_OVER') {
+      throw new Error(`Cannot draw card: deal or match is completed (${session.pointsEngine.tableStatus})`);
+    }
+
     const card = session.pointsEngine.drawCard(playerId, source);
     session.lastActionAt = Date.now();
 
@@ -201,6 +210,10 @@ export class TableManager {
     const session = this.activeTables.get(tableId);
     if (!session || !session.pointsEngine) throw new Error('Game session not found');
 
+    if (session.poolEngine?.isCompleted || session.pointsEngine.tableStatus === 'COMPLETED' || session.pointsEngine.tableStatus === 'DEAL_OVER') {
+      throw new Error(`Cannot discard card: deal or match is completed (${session.pointsEngine.tableStatus})`);
+    }
+
     const card = session.pointsEngine.discardCard(playerId, cardId);
     session.lastActionAt = Date.now();
 
@@ -216,6 +229,10 @@ export class TableManager {
   public handleDrop(tableId: string, playerId: string) {
     const session = this.activeTables.get(tableId);
     if (!session || !session.pointsEngine) throw new Error('Game session not found');
+
+    if (session.poolEngine?.isCompleted || session.pointsEngine.tableStatus === 'COMPLETED' || session.pointsEngine.tableStatus === 'DEAL_OVER') {
+      throw new Error(`Cannot drop: deal or match is completed (${session.pointsEngine.tableStatus})`);
+    }
 
     const dropType = session.pointsEngine.drop(playerId);
     session.lastActionAt = Date.now();
@@ -242,10 +259,33 @@ export class TableManager {
     const session = this.activeTables.get(tableId);
     if (!session || !session.pointsEngine) throw new Error('Game session not found');
 
+    if (session.poolEngine?.isCompleted || session.pointsEngine.tableStatus === 'COMPLETED' || session.pointsEngine.tableStatus === 'DEAL_OVER') {
+      throw new Error(`Cannot declare hand: deal or match is completed (${session.pointsEngine.tableStatus})`);
+    }
+
     const result = session.pointsEngine.declareHand(playerId, finishCardId, groups);
     session.lastActionAt = Date.now();
 
-    if (session.pointsEngine.tableStatus === 'DEAL_OVER') {
+    if (result.isValid && result.status === 'ARRANGE_HAND') {
+      // Clear normal turn timer
+      if (session.timerHandle) {
+        clearTimeout(session.timerHandle);
+        delete session.timerHandle;
+      }
+      if (session.arrangeTimerHandle) {
+        clearTimeout(session.arrangeTimerHandle);
+      }
+
+      // 15-second timer for other players to arrange their cards
+      session.arrangeTimerHandle = setTimeout(() => {
+        this.handleArrangeTimeout(session.tableId);
+      }, 15000);
+
+      this.broadcastState(session);
+      if (this.onEmitEvent && result.declarationInfo) {
+        this.onEmitEvent(session.tableId, 'game:hand_declared_arrange', result.declarationInfo);
+      }
+    } else if (session.pointsEngine.tableStatus === 'DEAL_OVER') {
       this.handleDealOver(session);
     } else {
       this.resetTurnTimer(session);
@@ -253,6 +293,51 @@ export class TableManager {
     }
 
     return result;
+  }
+
+  /**
+   * Player submits arranged hand during 15s ARRANGE_HAND phase to reduce penalty
+   */
+  public handleSubmitArrangedHand(
+    tableId: string,
+    playerId: string,
+    groups: CardGroup[]
+  ) {
+    const session = this.activeTables.get(tableId);
+    if (!session || !session.pointsEngine) throw new Error('Game session not found');
+
+    const subRes = session.pointsEngine.submitArrangedHand(playerId, groups);
+    session.lastActionAt = Date.now();
+
+    if (subRes.allSubmitted || session.pointsEngine.tableStatus === 'DEAL_OVER') {
+      if (session.arrangeTimerHandle) {
+        clearTimeout(session.arrangeTimerHandle);
+        delete session.arrangeTimerHandle;
+      }
+      this.handleDealOver(session);
+    } else {
+      this.broadcastState(session);
+    }
+
+    return subRes;
+  }
+
+  /**
+   * 15s arrange timer expired: score hands and conclude deal
+   */
+  private handleArrangeTimeout(tableId: string) {
+    const session = this.activeTables.get(tableId);
+    if (!session || !session.pointsEngine) return;
+
+    if (session.arrangeTimerHandle) {
+      clearTimeout(session.arrangeTimerHandle);
+      delete session.arrangeTimerHandle;
+    }
+
+    if (session.pointsEngine.tableStatus === 'ARRANGE_HAND') {
+      session.pointsEngine.concludeArrangePhase();
+      this.handleDealOver(session);
+    }
   }
 
   /**
@@ -277,8 +362,24 @@ export class TableManager {
       clearTimeout(session.timerHandle);
       delete session.timerHandle;
     }
+    if (session.arrangeTimerHandle) {
+      clearTimeout(session.arrangeTimerHandle);
+      delete session.arrangeTimerHandle;
+    }
 
     const dealResult = session.pointsEngine!.completedDealResult!;
+    const revealedHands = session.pointsEngine!.getRevealedHands();
+
+    // 1. Authoritative Hand Reveal Event: Publish all participants' verified cards
+    if (this.onEmitEvent) {
+      this.onEmitEvent(session.tableId, 'deal:hands_revealed', {
+        tableId: session.tableId,
+        dealNumber: session.pointsEngine!.dealNumber,
+        winnerPlayerId: dealResult.winnerPlayerId,
+        hands: revealedHands,
+        revealedAt: Date.now(),
+      });
+    }
 
     if (session.config.variant === 'POINTS') {
       // Points Rummy is single-deal -> game complete!
@@ -305,6 +406,18 @@ export class TableManager {
     } else if (session.poolEngine) {
       // Pool Rummy multi-deal
       const poolConclusion = session.poolEngine.concludeCurrentDeal();
+      const scoreboard = session.poolEngine.getScoreboard();
+
+      // Save deal record in database
+      this.db.savePoolDeal({
+        dealId: `deal-${session.tableId}-${dealResult.dealNumber}`,
+        matchId: `match-${session.tableId}`,
+        dealNumber: dealResult.dealNumber,
+        winnerPlayerId: dealResult.winnerPlayerId,
+        scoresJson: JSON.stringify(dealResult.scores),
+        revealedHandsJson: JSON.stringify(revealedHands),
+        completedAt: new Date().toISOString(),
+      });
 
       if (poolConclusion.isPoolCompleted) {
         // Pool game completed!
@@ -320,6 +433,14 @@ export class TableManager {
           completedAt: new Date().toISOString(),
         });
 
+        const poolMatch = this.db.getPoolMatch(`match-${session.tableId}`);
+        if (poolMatch) {
+          poolMatch.status = 'COMPLETED';
+          poolMatch.winnerUserId = poolConclusion.finalResult!.winnerPlayerId;
+          poolMatch.dealsCount = session.poolEngine.dealHistory.length;
+          poolMatch.completedAt = new Date().toISOString();
+        }
+
         this.broadcastState(session);
         if (this.onEmitEvent) {
           this.onEmitEvent(session.tableId, 'game:completed', {
@@ -328,30 +449,277 @@ export class TableManager {
           });
         }
       } else {
-        // Prepare next deal after 15-second results & scoreboard break
-        const nextRoundStartsAt = Date.now() + 15000;
-        session.pointsEngine!.nextRoundStartsAt = nextRoundStartsAt;
-        this.broadcastState(session);
-
+        // Start 15-second countdown to next deal
         if (this.onEmitEvent) {
-          this.onEmitEvent(session.tableId, 'game:deal_ended', {
-            dealResult: poolConclusion.dealResult,
-            nextRoundStartsAt,
-            nextDealInSec: 15,
-          });
+          this.onEmitEvent(session.tableId, 'scoreboard:updated', scoreboard);
         }
-
-        setTimeout(() => {
-          if (this.activeTables.has(session.tableId)) {
-            session.poolEngine!.startNextDeal();
-            session.pointsEngine = session.poolEngine!.currentDealEngine!;
-            session.pointsEngine.nextRoundStartsAt = null;
-            this.resetTurnTimer(session);
-            this.broadcastState(session);
-          }
-        }, 15000);
+        this.startNextDealCountdown(session, 15);
       }
     }
+  }
+
+  /**
+   * Starts or resumes the next-deal countdown timer.
+   */
+  public startNextDealCountdown(session: GameTableSession, durationSec: number = 10) {
+    if (session.nextDealTimerHandle) {
+      clearTimeout(session.nextDealTimerHandle);
+      delete session.nextDealTimerHandle;
+    }
+
+    const startsAt = Date.now() + durationSec * 1000;
+    session.nextDealDeadline = startsAt;
+    session.nextDealRemainingMs = durationSec * 1000;
+    session.pointsEngine!.nextRoundStartsAt = startsAt;
+    this.broadcastState(session);
+
+    if (this.onEmitEvent) {
+      this.onEmitEvent(session.tableId, 'game:deal_ended', {
+        dealResult: session.pointsEngine!.completedDealResult,
+        nextRoundStartsAt: startsAt,
+        nextDealInSec: durationSec,
+      });
+      this.onEmitEvent(session.tableId, 'deal:countdown_tick', {
+        tableId: session.tableId,
+        dealNumber: session.poolEngine!.currentDealNumber,
+        startsAt,
+        countdownSec: durationSec,
+        isPaused: false,
+      });
+    }
+
+    session.nextDealTimerHandle = setTimeout(() => {
+      this.executeNextDeal(session);
+    }, durationSec * 1000);
+  }
+
+  /**
+   * Executes transition to the next deal when countdown reaches zero.
+   */
+  private executeNextDeal(session: GameTableSession) {
+    if (!this.activeTables.has(session.tableId) || !session.poolEngine) return;
+    if (session.poolEngine.isCompleted) return;
+
+    try {
+      session.poolEngine.startNextDeal();
+      session.pointsEngine = session.poolEngine.currentDealEngine!;
+      session.pointsEngine.nextRoundStartsAt = null;
+      delete session.nextDealTimerHandle;
+      delete session.nextDealDeadline;
+      delete session.nextDealRemainingMs;
+
+      this.resetTurnTimer(session);
+      this.broadcastState(session);
+
+      if (this.onEmitEvent) {
+        this.onEmitEvent(session.tableId, 'deal:started', {
+          tableId: session.tableId,
+          dealNumber: session.poolEngine.currentDealNumber,
+          startedAt: Date.now(),
+        });
+      }
+    } catch (err: any) {
+      console.error(`Error starting next deal on table ${session.tableId}:`, err.message);
+    }
+  }
+
+  /**
+   * Handles player requesting a prize split.
+   * Pauses the next-deal countdown and initiates 15s voting window.
+   */
+  public handleRequestSplit(tableId: string, playerId: string) {
+    const session = this.activeTables.get(tableId);
+    if (!session || !session.poolEngine) throw new Error('Table not found or not a Pool game');
+
+    const splitReq = session.poolEngine.createSplitRequest(playerId);
+
+    // Pause next-deal countdown
+    if (session.nextDealTimerHandle && session.nextDealDeadline) {
+      clearTimeout(session.nextDealTimerHandle);
+      delete session.nextDealTimerHandle;
+      session.nextDealRemainingMs = Math.max(1000, session.nextDealDeadline - Date.now());
+    }
+
+    // Save split request in database
+    this.db.savePoolSplit({
+      splitId: splitReq.splitId,
+      matchId: `match-${tableId}`,
+      dealNumber: session.poolEngine.currentDealNumber,
+      initiatorPlayerId: playerId,
+      status: 'PENDING',
+      calculationJson: JSON.stringify(splitReq.calculation),
+      votesJson: JSON.stringify(splitReq.votes),
+      createdAt: new Date().toISOString(),
+    });
+
+    if (this.onEmitEvent) {
+      this.onEmitEvent(session.tableId, 'split:requested', splitReq);
+      this.onEmitEvent(session.tableId, 'deal:countdown_paused', {
+        tableId,
+        reason: 'SPLIT_VOTING',
+        remainingMs: session.nextDealRemainingMs,
+      });
+    }
+
+    // Start 15s voting timeout
+    if (session.splitTimerHandle) {
+      clearTimeout(session.splitTimerHandle);
+    }
+    session.splitTimerHandle = setTimeout(() => {
+      this.handleSplitTimeout(tableId);
+    }, 15000);
+
+    return splitReq;
+  }
+
+  /**
+   * Handles player voting on an active prize split proposal.
+   */
+  public handleVoteSplit(tableId: string, playerId: string, accept: boolean) {
+    const session = this.activeTables.get(tableId);
+    if (!session || !session.poolEngine) throw new Error('Table not found or not a Pool game');
+
+    const splitResult = session.poolEngine.recordSplitVote(playerId, accept);
+
+    // Update split record in database
+    const dbSplit = this.db.poolSplits.get(splitResult.splitId);
+    if (dbSplit) {
+      dbSplit.status = splitResult.status;
+      dbSplit.votesJson = JSON.stringify(splitResult.votes);
+    }
+
+    if (splitResult.status === 'ACCEPTED') {
+      if (session.splitTimerHandle) {
+        clearTimeout(session.splitTimerHandle);
+        delete session.splitTimerHandle;
+      }
+      if (session.nextDealTimerHandle) {
+        clearTimeout(session.nextDealTimerHandle);
+        delete session.nextDealTimerHandle;
+      }
+
+      session.pointsEngine!.tableStatus = 'COMPLETED';
+
+      // Save final split match result
+      this.db.saveResult({
+        id: `split-res-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        tableId: session.tableId,
+        variant: session.config.variant,
+        winnerUserId: 'SPLIT_MUTUAL',
+        dealsCount: session.poolEngine.dealHistory.length,
+        standingsJson: JSON.stringify(session.poolEngine.finalResult!.finalStandings),
+        completedAt: new Date().toISOString(),
+      });
+
+      const poolMatch = this.db.getPoolMatch(`match-${session.tableId}`);
+      if (poolMatch) {
+        poolMatch.status = 'COMPLETED';
+        poolMatch.isSplit = true;
+        poolMatch.winnerUserId = 'SPLIT_MUTUAL';
+        poolMatch.completedAt = new Date().toISOString();
+      }
+
+      this.broadcastState(session);
+      if (this.onEmitEvent) {
+        this.onEmitEvent(session.tableId, 'split:completed', splitResult);
+        this.onEmitEvent(session.tableId, 'game:completed', {
+          dealResult: session.pointsEngine!.completedDealResult,
+          finalResult: session.poolEngine.finalResult,
+          isSplit: true,
+        });
+      }
+    } else if (splitResult.status === 'DECLINED') {
+      if (session.splitTimerHandle) {
+        clearTimeout(session.splitTimerHandle);
+        delete session.splitTimerHandle;
+      }
+
+      if (this.onEmitEvent) {
+        this.onEmitEvent(session.tableId, 'split:declined', {
+          splitId: splitResult.splitId,
+          declinedByPlayerId: playerId,
+        });
+      }
+
+      // Resume next deal countdown (minimum 5s)
+      const resumeSec = Math.max(5, Math.ceil((session.nextDealRemainingMs || 5000) / 1000));
+      this.startNextDealCountdown(session, resumeSec);
+    } else {
+      // Still pending, broadcast updated vote tally
+      if (this.onEmitEvent) {
+        this.onEmitEvent(session.tableId, 'split:vote_updated', splitResult);
+      }
+    }
+
+    return splitResult;
+  }
+
+  /**
+   * Handles timeout of split voting
+   */
+  private handleSplitTimeout(tableId: string) {
+    const session = this.activeTables.get(tableId);
+    if (!session || !session.poolEngine) return;
+
+    const expired = session.poolEngine.expireSplit();
+    if (expired) {
+      const dbSplit = this.db.poolSplits.get(expired.splitId);
+      if (dbSplit) {
+        dbSplit.status = 'EXPIRED';
+      }
+
+      if (this.onEmitEvent) {
+        this.onEmitEvent(session.tableId, 'split:expired', expired);
+      }
+
+      // Resume next deal countdown (minimum 5s)
+      const resumeSec = Math.max(5, Math.ceil((session.nextDealRemainingMs || 5000) / 1000));
+      this.startNextDealCountdown(session, resumeSec);
+    }
+  }
+
+  /**
+   * Handles eliminated player requesting re-entry
+   */
+  public handleRequestReentry(tableId: string, playerId: string) {
+    const session = this.activeTables.get(tableId);
+    if (!session || !session.poolEngine) throw new Error('Table not found or not a Pool game');
+
+    const res = session.poolEngine.executeReentry(playerId);
+    if (res.success) {
+      // Save reentry record in database
+      this.db.savePoolReentry({
+        reentryId: `reentry-${tableId}-${playerId}-${Date.now()}`,
+        matchId: `match-${tableId}`,
+        dealNumber: session.poolEngine.currentDealNumber,
+        playerId,
+        fee: session.config.entryAmount || 100,
+        startingScore: res.newScore,
+        createdAt: new Date().toISOString(),
+      });
+
+      const scoreboard = session.poolEngine.getScoreboard();
+      this.broadcastState(session);
+
+      if (this.onEmitEvent) {
+        this.onEmitEvent(session.tableId, 'game:player_reentered', {
+          playerId,
+          newScore: res.newScore,
+        });
+        this.onEmitEvent(session.tableId, 'scoreboard:updated', scoreboard);
+      }
+    }
+
+    return res;
+  }
+
+  /**
+   * Returns current pool scoreboard
+   */
+  public handleGetScoreboard(tableId: string) {
+    const session = this.activeTables.get(tableId);
+    if (!session || !session.poolEngine) return null;
+    return session.poolEngine.getScoreboard();
   }
 
   /**

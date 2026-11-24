@@ -26,18 +26,24 @@ describe('Server Architecture & Integration Tests', () => {
     let createdTableId: string | undefined;
 
     const tableManager = new TableManager();
-    const mm = new MatchmakingService((config, players) => {
-      const session = tableManager.createTable(
-        config,
-        players.map((p) => ({
-          playerId: p.playerId,
-          username: p.username,
-          avatarUrl: p.avatarUrl,
-          socketId: p.socketId,
-        }))
-      );
-      createdTableId = session.tableId;
-    });
+    const mm = new MatchmakingService(
+      (config, players) => {
+        const session = tableManager.createTable(
+          config,
+          players.map((p) => ({
+            playerId: p.playerId,
+            username: p.username,
+            avatarUrl: p.avatarUrl,
+            socketId: p.socketId,
+          }))
+        );
+        createdTableId = session.tableId;
+      },
+      undefined,
+      undefined,
+      undefined,
+      { countdownDurationMs: 0 }
+    );
 
     // Player 1 joins queue
     const res1 = mm.joinQueue({
@@ -50,7 +56,9 @@ describe('Server Architecture & Integration Tests', () => {
       maxPlayers: 2,
       queuedAt: Date.now(),
     });
-    expect(res1.status).toBe('QUEUED');
+    expect(res1.state).toBe('PLAYERS_JOINING');
+    expect(res1.ticket?.ticketStatus).toBe('RESERVED');
+    expect(res1.table?.occupiedSeatCount).toBe(1);
 
     // Player 2 joins queue
     const res2 = mm.joinQueue({
@@ -63,7 +71,7 @@ describe('Server Architecture & Integration Tests', () => {
       maxPlayers: 2,
       queuedAt: Date.now(),
     });
-    expect(res2.status).toBe('MATCHED');
+    expect(res2.state).toBe('STARTED');
     expect(createdTableId).toBeDefined();
 
     const session = tableManager.getSession(createdTableId!);

@@ -25,7 +25,7 @@ export interface DbUserProfile {
 
 export interface DbGameTable {
   id: string;
-  variant: 'POINTS' | 'POOL_101' | 'POOL_201';
+  variant: 'POINTS' | 'POOL_240' | 'POOL_101' | 'POOL_201' | 'POINTS_240';
   pointValue: number;
   maxPlayers: number;
   status: 'WAITING' | 'IN_PROGRESS' | 'COMPLETED' | 'ABANDONED';
@@ -52,6 +52,110 @@ export interface DbAdminAuditLog {
   timestamp: string;
 }
 
+export interface DbMatchmakingTicket {
+  ticketId: string;
+  playerId: string;
+  username: string;
+  socketId: string;
+  gameType: 'POINTS' | 'POOL_240' | 'POOL_101' | 'POOL_201' | 'POINTS_240';
+  poolVariant?: 'POOL_101' | 'POOL_201' | 'POOL_240' | null;
+  tableCapacity: 2 | 6;
+  tableConfigurationId: string;
+  pointValue: number;
+  entryAmount?: number;
+  rulesVersion: string;
+  ticketStatus: 'QUEUED' | 'RESERVED' | 'MATCH_FOUND' | 'READY' | 'STARTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
+  currentTableId: string | null;
+  assignedSeatIndex: number | null;
+  reservationExpiry: number | null;
+  queueEnteredAt: number;
+  lastHeartbeatAt: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DbWaitingTable {
+  tableId: string;
+  gameType: 'POINTS' | 'POOL_240' | 'POOL_101' | 'POOL_201' | 'POINTS_240';
+  poolVariant?: 'POOL_101' | 'POOL_201' | 'POOL_240' | null;
+  tableCapacity: 2 | 6;
+  pointValue: number;
+  entryAmount?: number;
+  tableConfigurationId: string;
+  rulesVersion: string;
+  occupiedSeatCount: number;
+  tableStatus: string;
+  lockedAt: number | null;
+  createdAt: string;
+  lastActivityAt: number;
+}
+
+export interface DbSeatReservation {
+  reservationId: string;
+  tableId: string;
+  ticketId: string;
+  playerId: string;
+  seatIndex: number;
+  status: 'RESERVED' | 'CONFIRMED' | 'RELEASED' | 'EXPIRED';
+  reservedAt: number;
+  expiresAt: number;
+}
+
+export interface DbMatchmakingEvent {
+  eventId: string;
+  eventType: string;
+  ticketId?: string;
+  playerId: string;
+  tableId?: string;
+  payloadJson: string;
+  createdAt: string;
+}
+
+export interface DbPoolMatch {
+  matchId: string;
+  tableId: string;
+  variant: string;
+  entryAmount: number;
+  capacity: number;
+  status: string;
+  dealsCount: number;
+  winnerUserId?: string;
+  isSplit: boolean;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface DbPoolDeal {
+  dealId: string;
+  matchId: string;
+  dealNumber: number;
+  winnerPlayerId: string;
+  scoresJson: string;
+  revealedHandsJson: string;
+  completedAt: string;
+}
+
+export interface DbPoolSplit {
+  splitId: string;
+  matchId: string;
+  dealNumber: number;
+  initiatorPlayerId: string;
+  status: string;
+  calculationJson: string;
+  votesJson: string;
+  createdAt: string;
+}
+
+export interface DbPoolReentry {
+  reentryId: string;
+  matchId: string;
+  dealNumber: number;
+  playerId: string;
+  fee: number;
+  startingScore: number;
+  createdAt: string;
+}
+
 /**
  * High-performance, production-ready Database Service with normalized data structures.
  * Supports persistent storage and in-memory caching.
@@ -64,6 +168,18 @@ export class DatabaseService {
   public tables = new Map<string, DbGameTable>();
   public results = new Map<string, DbGameResult>();
   public auditLogs: DbAdminAuditLog[] = [];
+
+  // Matchmaking persistent entities
+  public matchmakingTickets = new Map<string, DbMatchmakingTicket>();
+  public waitingTables = new Map<string, DbWaitingTable>();
+  public seatReservations = new Map<string, DbSeatReservation>();
+  public matchmakingEvents: DbMatchmakingEvent[] = [];
+
+  // Pool Rummy persistent tournament entities
+  public poolMatches = new Map<string, DbPoolMatch>();
+  public poolDeals = new Map<string, DbPoolDeal>();
+  public poolSplits = new Map<string, DbPoolSplit>();
+  public poolReentries = new Map<string, DbPoolReentry>();
 
   private constructor() {
     this.seedDefaultUsers();
@@ -152,5 +268,95 @@ export class DatabaseService {
       detailsJson: JSON.stringify(details),
       timestamp: new Date().toISOString(),
     });
+  }
+
+  // --- Matchmaking Query & Mutation Helpers ---
+
+  public findActiveTicketForPlayer(playerId: string): DbMatchmakingTicket | undefined {
+    for (const ticket of this.matchmakingTickets.values()) {
+      if (
+        ticket.playerId === playerId &&
+        ['QUEUED', 'RESERVED', 'MATCH_FOUND', 'READY'].includes(ticket.ticketStatus)
+      ) {
+        return ticket;
+      }
+    }
+    return undefined;
+  }
+
+  public saveMatchmakingTicket(ticket: DbMatchmakingTicket): void {
+    this.matchmakingTickets.set(ticket.ticketId, { ...ticket, updatedAt: new Date().toISOString() });
+  }
+
+  public updateTicketStatus(ticketId: string, status: DbMatchmakingTicket['ticketStatus']): void {
+    const t = this.matchmakingTickets.get(ticketId);
+    if (t) {
+      t.ticketStatus = status;
+      t.updatedAt = new Date().toISOString();
+    }
+  }
+
+  public findWaitingTableById(tableId: string): DbWaitingTable | undefined {
+    return this.waitingTables.get(tableId);
+  }
+
+  public saveWaitingTable(table: DbWaitingTable): void {
+    this.waitingTables.set(table.tableId, { ...table });
+  }
+
+  public saveSeatReservation(reservation: DbSeatReservation): void {
+    this.seatReservations.set(reservation.reservationId, { ...reservation });
+  }
+
+  public logMatchmakingEvent(
+    eventType: string,
+    playerId: string,
+    ticketId?: string,
+    tableId?: string,
+    payload?: any
+  ): void {
+    this.matchmakingEvents.push({
+      eventId: `mme-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      eventType,
+      playerId,
+      ticketId,
+      tableId,
+      payloadJson: JSON.stringify(payload || {}),
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  // --- Pool Tournament Persistence Helpers ---
+
+  public savePoolMatch(match: DbPoolMatch): void {
+    this.poolMatches.set(match.matchId, { ...match });
+  }
+
+  public getPoolMatch(matchId: string): DbPoolMatch | undefined {
+    return this.poolMatches.get(matchId);
+  }
+
+  public savePoolDeal(deal: DbPoolDeal): void {
+    this.poolDeals.set(deal.dealId, { ...deal });
+  }
+
+  public getPoolDealsForMatch(matchId: string): DbPoolDeal[] {
+    return Array.from(this.poolDeals.values()).filter((d) => d.matchId === matchId);
+  }
+
+  public savePoolSplit(split: DbPoolSplit): void {
+    this.poolSplits.set(split.splitId, { ...split });
+  }
+
+  public getPoolSplitsForMatch(matchId: string): DbPoolSplit[] {
+    return Array.from(this.poolSplits.values()).filter((s) => s.matchId === matchId);
+  }
+
+  public savePoolReentry(reentry: DbPoolReentry): void {
+    this.poolReentries.set(reentry.reentryId, { ...reentry });
+  }
+
+  public getPoolReentriesForMatch(matchId: string): DbPoolReentry[] {
+    return Array.from(this.poolReentries.values()).filter((r) => r.matchId === matchId);
   }
 }

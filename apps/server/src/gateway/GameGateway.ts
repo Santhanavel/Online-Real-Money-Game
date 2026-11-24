@@ -38,29 +38,49 @@ export class GameGateway {
       }
     );
 
-    this.matchmakingService.setMatchFoundCallback((config, players) => {
-      const session = this.tableManager.createTable(
-        config,
-        players.map((p) => ({
-          playerId: p.playerId,
-          username: p.username,
-          avatarUrl: p.avatarUrl,
-          socketId: p.socketId,
-        }))
-      );
+    this.matchmakingService.setCallbacks(
+      // 1. onMatchFound
+      (config, players) => {
+        const session = this.tableManager.createTable(
+          config,
+          players.map((p) => ({
+            playerId: p.playerId,
+            username: p.username,
+            avatarUrl: p.avatarUrl,
+            socketId: p.socketId,
+          }))
+        );
 
-      // Join sockets into the room
-      for (const p of players) {
-        const socket = this.io.sockets.sockets.get(p.socketId);
-        if (socket) {
-          socket.join(`table:${config.tableId}`);
-          socket.emit('table:joined', { tableId: config.tableId, config });
+        // Join sockets into the room & transition them into game
+        for (const p of players) {
+          const socket = this.io.sockets.sockets.get(p.socketId);
+          if (socket) {
+            socket.join(`table:${config.tableId}`);
+            socket.emit('matchmaking:started', { tableId: config.tableId, config });
+            socket.emit('table:joined', { tableId: config.tableId, config });
+          }
+        }
+
+        // Initial broadcast
+        this.broadcastTableState(config.tableId, session);
+      },
+      // 2. onTableUpdated: real-time seat occupancy update
+      (tableId, payload, targetSocketIds) => {
+        for (const socketId of targetSocketIds) {
+          this.io.to(socketId).emit('matchmaking:table_updated', payload);
+        }
+      },
+      // 3. onPlayerStatus: individual player state update
+      (socketId, payload) => {
+        this.io.to(socketId).emit('matchmaking:status', payload);
+      },
+      // 4. onCountdownEvent: countdown starts, ticks, leave_locked, cancelled
+      (targetSocketIds, event, data) => {
+        for (const socketId of targetSocketIds) {
+          this.io.to(socketId).emit(event, data);
         }
       }
-
-      // Initial broadcast
-      this.broadcastTableState(config.tableId, session);
-    });
+    );
   }
 
   /**
@@ -108,17 +128,20 @@ export class GameGateway {
     this.io.on('connection', (socket: Socket) => {
       const user = (socket as any).user;
 
-      // 1. Join Matchmaking
-      socket.on('matchmaking:join', (data: { variant: any; pointValue: number; maxPlayers: 2 | 6 }) => {
+      // 1. Join Matchmaking (Supports 'matchmaking:join', 'JOIN_MATCHMAKING', 'JOIN_TABLE', 'table:join')
+      const handleJoin = (data: { variant: any; entryAmount?: number; pointValue?: number; maxPlayers: 2 | 6; configurationId?: string }) => {
         try {
+          const entryAmount = Number(data.entryAmount) || 50;
           const queuedPlayer: QueuedPlayer = {
             playerId: user.userId,
             username: user.username,
             avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`,
             socketId: socket.id,
             variant: data.variant || 'POINTS',
-            pointValue: Number(data.pointValue) || 1.0,
+            entryAmount,
+            pointValue: Number(data.pointValue) || (entryAmount / 80),
             maxPlayers: data.maxPlayers === 6 ? 6 : 2,
+            configurationId: data.configurationId,
             queuedAt: Date.now(),
           };
 
@@ -127,12 +150,64 @@ export class GameGateway {
         } catch (err: any) {
           socket.emit('error:action_rejected', { message: err.message });
         }
+      };
+
+      socket.on('matchmaking:join', handleJoin);
+      socket.on('JOIN_MATCHMAKING', handleJoin);
+      socket.on('JOIN_TABLE', handleJoin);
+      socket.on('table:join', handleJoin);
+
+      // 2. Cancel / Leave Matchmaking (Supports 'matchmaking:cancel', 'matchmaking:leave', 'LEAVE_MATCHMAKING', 'LEAVE_TABLE', 'table:leave')
+      const handleLeave = (data?: { ticketId?: string }) => {
+        try {
+          if (data?.ticketId) {
+            const res = this.matchmakingService.cancelTicket(data.ticketId);
+            socket.emit('matchmaking:status', res);
+          } else {
+            this.matchmakingService.leaveQueue(user.userId);
+            socket.emit('matchmaking:status', { state: 'CANCELLED', message: 'Matchmaking cancelled' });
+          }
+        } catch (err: any) {
+          socket.emit('error:action_rejected', { message: err.message });
+        }
+      };
+
+      socket.on('matchmaking:cancel', handleLeave);
+      socket.on('matchmaking:leave', handleLeave);
+      socket.on('LEAVE_MATCHMAKING', handleLeave);
+      socket.on('LEAVE_TABLE', handleLeave);
+      socket.on('table:leave', handleLeave);
+
+      // 2.1 Request Table Status (Requirement 12)
+      const handleRequestTableStatus = (data: { tableId: string }) => {
+        if (!data?.tableId) return;
+        const waitingTable = this.matchmakingService.getTableStatus(data.tableId);
+        if (waitingTable) {
+          const payload = this.matchmakingService.formatTablePayload(waitingTable, '');
+          socket.emit('table:status', payload);
+          socket.emit('TABLE_STATUS_RESPONSE', payload);
+        }
+      };
+
+      socket.on('table:request_status', handleRequestTableStatus);
+      socket.on('REQUEST_TABLE_STATUS', handleRequestTableStatus);
+
+      // 2.2 Matchmaking Heartbeat
+      socket.on('matchmaking:heartbeat', (data: { ticketId: string }) => {
+        if (data?.ticketId) {
+          this.matchmakingService.heartbeat(data.ticketId);
+        }
       });
 
-      // 2. Leave Matchmaking
-      socket.on('matchmaking:leave', () => {
-        this.matchmakingService.leaveQueue(user.userId);
-        socket.emit('matchmaking:status', { status: 'CANCELLED' });
+      // 2.3 Matchmaking Reconnect
+      socket.on('matchmaking:reconnect', () => {
+        const res = this.matchmakingService.reconnectPlayer(user.userId, socket.id);
+        if (res) {
+          socket.emit('matchmaking:status', res);
+          if (res.table) {
+            socket.emit('matchmaking:table_updated', res.table);
+          }
+        }
       });
 
       // 3. Draw Card
@@ -185,6 +260,20 @@ export class GameGateway {
         }
       });
 
+      // 6.1 Submit Arranged Hand (during 15s arrange phase)
+      socket.on('game:submit_arranged_hand', (data: { tableId: string; groups: any[] }) => {
+        try {
+          const res = this.tableManager.handleSubmitArrangedHand(
+            data.tableId,
+            user.userId,
+            data.groups
+          );
+          socket.emit('game:hand_submitted', { success: true });
+        } catch (err: any) {
+          socket.emit('error:action_rejected', { action: 'submit_arranged_hand', message: err.message });
+        }
+      });
+
       // 7. Group Cards
       socket.on('game:group_cards', (data: { tableId: string; groups: any[] }) => {
         try {
@@ -208,9 +297,55 @@ export class GameGateway {
         }
       });
 
+      // 9. Pool Prize Split Request
+      socket.on('split:request', (data: { tableId: string }) => {
+        try {
+          const splitReq = this.tableManager.handleRequestSplit(data.tableId, user.userId);
+          socket.emit('split:request_success', { splitReq });
+        } catch (err: any) {
+          socket.emit('error:action_rejected', { action: 'split:request', message: err.message });
+        }
+      });
+
+      // 10. Pool Prize Split Vote
+      socket.on('split:vote', (data: { tableId: string; accept: boolean }) => {
+        try {
+          const splitResult = this.tableManager.handleVoteSplit(data.tableId, user.userId, data.accept);
+          socket.emit('split:vote_success', { splitResult });
+        } catch (err: any) {
+          socket.emit('error:action_rejected', { action: 'split:vote', message: err.message });
+        }
+      });
+
+      // 11. Pool Re-entry Request
+      socket.on('pool:reentry', (data: { tableId: string }) => {
+        try {
+          const res = this.tableManager.handleRequestReentry(data.tableId, user.userId);
+          if (res.success) {
+            socket.emit('pool:reentry_success', res);
+          } else {
+            socket.emit('error:action_rejected', { action: 'pool:reentry', message: res.reason });
+          }
+        } catch (err: any) {
+          socket.emit('error:action_rejected', { action: 'pool:reentry', message: err.message });
+        }
+      });
+
+      // 12. Scoreboard Query
+      socket.on('scoreboard:get', (data: { tableId: string }) => {
+        try {
+          const scoreboard = this.tableManager.handleGetScoreboard(data.tableId);
+          if (scoreboard) {
+            socket.emit('scoreboard:updated', scoreboard);
+          }
+        } catch (err: any) {
+          socket.emit('error:action_rejected', { action: 'scoreboard:get', message: err.message });
+        }
+      });
+
       // Disconnect
       socket.on('disconnect', () => {
-        this.matchmakingService.leaveQueue(user.userId);
+        // Retain seat reservation during grace period for reconnection; TableManager handles game disconnect
         this.tableManager.handlePlayerDisconnect(socket.id);
       });
     });

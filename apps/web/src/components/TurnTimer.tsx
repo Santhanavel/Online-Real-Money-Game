@@ -18,9 +18,9 @@ export const TurnTimer: React.FC<TurnTimerProps> = ({
   const strokeDashoffset = circumference * (1 - progress);
 
   const getColor = () => {
-    if (remainingSec > 15) return '#10B981'; // green
-    if (remainingSec > 7) return '#F59E0B';  // amber
-    return '#EF4444';                       // red
+    if (remainingSec > 15) return '#26D84C'; // Active game timer green
+    if (remainingSec > 7) return '#F6BE36';  // Amber
+    return '#E5232A';                       // Red low time
   };
 
   return (

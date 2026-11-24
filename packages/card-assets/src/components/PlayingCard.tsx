@@ -72,12 +72,12 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
         width: `${dims.width}px`,
         height: `${dims.height}px`,
         cursor: isDisabled ? 'not-allowed' : onClick ? 'pointer' : 'default',
-        transform: isSelected ? 'translateY(-18px)' : isNewlyPicked ? 'translateY(-6px)' : 'translateY(0)',
+        transform: isSelected ? 'translateY(-10px)' : isNewlyPicked ? 'translateY(-4px)' : 'translateY(0)',
         boxShadow: isSelected
-          ? '0 12px 28px rgba(245, 158, 11, 0.45), 0 0 0 2.5px #F59E0B'
+          ? '0 6px 14px rgba(245, 158, 11, 0.45), 0 0 0 2px #F59E0B'
           : isNewlyPicked
-          ? '0 8px 24px rgba(56, 189, 248, 0.45), 0 0 0 2.5px #38BDF8'
-          : '0 3px 10px rgba(0,0,0,0.22), 0 1px 3px rgba(0,0,0,0.12)',
+          ? '0 4px 12px rgba(56, 189, 248, 0.4), 0 0 0 2px #38BDF8'
+          : '0 2px 6px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.1)',
         opacity: isDisabled ? 0.4 : isDragging ? 0.7 : 1,
       }}
       className={`relative select-none bg-white rounded-xl transition-all duration-200 ease-out border border-slate-300/80 overflow-hidden ${
@@ -148,32 +148,6 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
         )}
       </div>
 
-      {/* Wild Joker Top Ribbon Badge */}
-      {isWildJoker && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 0,
-            right: 0,
-            background: 'linear-gradient(135deg, #F59E0B, #D97706)',
-            color: '#FFFFFF',
-            fontSize: size === 'sm' ? '8px' : '9px',
-            fontWeight: 900,
-            padding: '1px 5px',
-            borderBottomLeftRadius: '6px',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '2px',
-            letterSpacing: '0.05em',
-            zIndex: 20,
-          }}
-        >
-          <span>★</span>
-          <span>WILD</span>
-        </div>
-      )}
-
       {/* Printed Joker Bottom Ribbon */}
       {card.isPrintedJoker && (
         <div
@@ -194,29 +168,6 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
           }}
         >
           JOKER
-        </div>
-      )}
-
-      {/* Newly Drawn Card Visual Tag */}
-      {isNewlyPicked && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 2,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'linear-gradient(135deg, #0284C7, #0369A1)',
-            color: '#FFFFFF',
-            fontSize: '8px',
-            fontWeight: 900,
-            padding: '1px 6px',
-            borderRadius: '9999px',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
-            letterSpacing: '0.04em',
-            zIndex: 20,
-          }}
-        >
-          PICKED
         </div>
       )}
 

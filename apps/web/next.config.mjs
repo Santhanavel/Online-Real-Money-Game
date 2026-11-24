@@ -9,6 +9,22 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  async rewrites() {
+    return [
+      {
+        source: '/socket.io',
+        destination: 'http://localhost:4000/socket.io/',
+      },
+      {
+        source: '/socket.io/:path*',
+        destination: 'http://localhost:4000/socket.io/:path*',
+      },
+      {
+        source: '/api/:path*',
+        destination: 'http://localhost:4000/api/:path*',
+      },
+    ];
+  },
 };
 
 export default nextConfig;

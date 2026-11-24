@@ -88,6 +88,67 @@ export class AuthService {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
   }
 
+  private otps = new Map<string, { code: string; expiresAt: number }>();
+
+  public sendOtp(identifier: string): { success: boolean; message: string; demoCode?: string } {
+    const cleanId = identifier.trim();
+    if (!cleanId) throw new Error('Phone number or email is required');
+    const demoCode = '123456'; // Default demo OTP for development
+    this.otps.set(cleanId, {
+      code: demoCode,
+      expiresAt: Date.now() + 5 * 60 * 1000, // 5 min expiry
+    });
+    return { success: true, message: `OTP sent successfully to ${cleanId}`, demoCode };
+  }
+
+  public verifyOtp(identifier: string, code: string): { success: boolean; token?: string; user?: DbUser } {
+    const cleanId = identifier.trim();
+    const stored = this.otps.get(cleanId);
+    if (!stored || Date.now() > stored.expiresAt) {
+      throw new Error('OTP has expired or was not requested. Please request a new code.');
+    }
+    if (stored.code !== code.trim()) {
+      throw new Error('Invalid OTP code. Please enter the correct 6-digit code.');
+    }
+    this.otps.delete(cleanId);
+    let user = this.db.findUserByUsernameOrEmail(cleanId);
+    if (!user) {
+      // Auto-create or guest profile for quick login
+      const userId = `usr-${Date.now().toString().slice(-4)}`;
+      user = {
+        id: userId,
+        username: `Player_${cleanId.slice(-4) || '777'}`,
+        email: cleanId.includes('@') ? cleanId : `${cleanId}@rummy.internal`,
+        passwordHash: 'otp-auth',
+        role: 'USER',
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString(),
+      };
+      this.db.users.set(userId, user);
+      this.db.profiles.set(userId, {
+        userId,
+        displayName: user.username,
+        avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`,
+        gamesPlayed: 0,
+        gamesWon: 0,
+        totalPointsWon: 0,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    const token = this.generateToken(user);
+    return { success: true, token, user };
+  }
+
+  public resetPassword(identifier: string, newPasswordPlain: string): { success: boolean; message: string } {
+    const user = this.db.findUserByUsernameOrEmail(identifier);
+    if (!user) throw new Error('User not found with this identifier');
+    if (!newPasswordPlain || newPasswordPlain.length < 6) {
+      throw new Error('Password must be at least 6 characters long');
+    }
+    user.passwordHash = `hash-${newPasswordPlain}`;
+    return { success: true, message: 'Password updated successfully' };
+  }
+
   public verifyToken(token: string): AuthTokenPayload {
     try {
       return jwt.verify(token, JWT_SECRET) as AuthTokenPayload;

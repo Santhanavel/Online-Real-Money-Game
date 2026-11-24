@@ -196,6 +196,33 @@ class SoundEffectsManager {
       });
     } catch {}
   }
+
+  /**
+   * Sound: Gentle error / invalid action buzz
+   */
+  public playInvalidAction() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(150, ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(110, ctx.currentTime + 0.12);
+
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.13);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 0.13);
+    } catch {}
+  }
 }
 
 export const sounds = new SoundEffectsManager();

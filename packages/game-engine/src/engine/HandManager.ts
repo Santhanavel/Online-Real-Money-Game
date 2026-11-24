@@ -178,15 +178,19 @@ export class HandManager {
     extractPureSequences();
     extractSets();
 
-    // Any remaining cards grouped into groups or leftover group
+    // Any remaining cards grouped into clean, compact chunks of 3-4 cards (not one giant 10-card group)
     if (remaining.length > 0) {
-      // Check if remaining cards have jokers that can be added or form impure sequences
-      groups.push({
-        id: `group-${groupId++}`,
-        cards: remaining,
-        meldType: 'INVALID',
-        isValid: false,
-      });
+      const sortedRemaining = HandManager.sortBySuitAndRank(remaining);
+      while (sortedRemaining.length > 0) {
+        const chunkSize = sortedRemaining.length > 4 ? (sortedRemaining.length === 5 ? 3 : 4) : sortedRemaining.length;
+        const chunk = sortedRemaining.splice(0, chunkSize);
+        groups.push({
+          id: `group-${groupId++}`,
+          cards: chunk,
+          meldType: 'INVALID',
+          isValid: false,
+        });
+      }
     }
 
     // Refresh meld types on all groups
@@ -333,6 +337,55 @@ export class HandManager {
 
     // Re-evaluate meld status
     return cleanedGroups.map((g) => {
+      const evalRes = DeclarationValidator.evaluateGroup(g.cards, wildJokerCard ?? null);
+      return {
+        ...g,
+        meldType: evalRes.meldType,
+        isValid: evalRes.isValid,
+      };
+    });
+  }
+
+  /**
+   * Ungroups specified cards or dissolves groups:
+   * Extracts selected cards into an "Ungrouped" group, leaving remaining cards in their groups.
+   */
+  public static ungroupCards(
+    groups: CardGroup[],
+    cardIdsToUngroup: Set<string>,
+    wildJokerCard?: Card | null
+  ): CardGroup[] {
+    const unassigned: Card[] = [];
+    const preservedGroups: CardGroup[] = [];
+
+    for (const g of groups) {
+      const keeping = g.cards.filter((c) => !cardIdsToUngroup.has(c.cardId));
+      const extracted = g.cards.filter((c) => cardIdsToUngroup.has(c.cardId));
+      unassigned.push(...extracted);
+
+      if (keeping.length > 0) {
+        preservedGroups.push({
+          ...g,
+          cards: keeping,
+        });
+      }
+    }
+
+    if (unassigned.length > 0) {
+      const existingUngrouped = preservedGroups.find((g) => g.id.includes('ungrouped'));
+      if (existingUngrouped) {
+        existingUngrouped.cards.push(...unassigned);
+      } else {
+        preservedGroups.push({
+          id: `group-ungrouped-${Date.now()}`,
+          cards: unassigned,
+          meldType: 'INVALID',
+          isValid: false,
+        });
+      }
+    }
+
+    return preservedGroups.map((g) => {
       const evalRes = DeclarationValidator.evaluateGroup(g.cards, wildJokerCard ?? null);
       return {
         ...g,

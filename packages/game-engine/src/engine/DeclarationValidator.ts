@@ -16,6 +16,11 @@ export interface DeclarationResult {
   groupEvaluations: GroupEvaluation[];
   penaltyPoints: number;
   reason?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  missingRequirements?: string[];
+  invalidGroupIndices?: number[];
+  invalidCardIds?: string[];
 }
 
 export class DeclarationValidator {
@@ -120,15 +125,42 @@ export class DeclarationValidator {
     const hasSecondSequence = totalSequences >= 2;
     const allGroupsValid = invalidCount === 0;
 
+    const missingRequirements: string[] = [];
+    if (!hasPureSequence) {
+      missingRequirements.push('At least one Pure Sequence (3+ consecutive cards of same suit, no Joker) is required');
+    }
+    if (!hasSecondSequence) {
+      missingRequirements.push('At least two sequences are required (one Pure and at least one other Pure or Impure Sequence)');
+    }
+
+    const invalidGroupIndices: number[] = [];
+    const invalidCardIds: string[] = [];
+    evaluations.forEach((ev, idx) => {
+      if (!ev.isValid) {
+        invalidGroupIndices.push(idx);
+        for (const c of ev.cards) {
+          invalidCardIds.push(c.cardId);
+        }
+      }
+    });
+
+    if (invalidGroupIndices.length > 0) {
+      missingRequirements.push(`${invalidGroupIndices.length} group(s) are invalid (cannot form valid sequences or sets)`);
+    }
+
     const isValid = hasPureSequence && hasSecondSequence && allGroupsValid;
 
     let reason: string | undefined;
+    let errorCode: string | undefined;
     if (!hasPureSequence) {
       reason = 'At least one Pure Sequence is required';
+      errorCode = 'MISSING_PURE_SEQUENCE';
     } else if (!hasSecondSequence) {
       reason = 'At least two sequences are required (one pure, one second pure/impure)';
+      errorCode = 'MISSING_SECOND_SEQUENCE';
     } else if (!allGroupsValid) {
       reason = 'All cards must be arranged in valid sequences or sets with no invalid groups';
+      errorCode = 'INVALID_GROUP';
     }
 
     return {
@@ -138,6 +170,11 @@ export class DeclarationValidator {
       groupEvaluations: evaluations,
       penaltyPoints: isValid ? 0 : 80,
       reason,
+      errorCode,
+      errorMessage: reason,
+      missingRequirements,
+      invalidGroupIndices,
+      invalidCardIds,
     };
   }
 }

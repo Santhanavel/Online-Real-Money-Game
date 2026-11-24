@@ -67,6 +67,36 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   }
 });
 
+app.post('/api/auth/send-otp', (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.body;
+    const result = authService.sendOtp(identifier);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/verify-otp', (req: Request, res: Response) => {
+  try {
+    const { identifier, code } = req.body;
+    const result = authService.verifyOtp(identifier, code);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/reset-password', (req: Request, res: Response) => {
+  try {
+    const { identifier, newPassword } = req.body;
+    const result = authService.resetPassword(identifier, newPassword);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/auth/profile/:userId', (req: Request, res: Response) => {
   try {
     const result = authService.getProfile(req.params.userId);
@@ -87,7 +117,7 @@ app.get('/api/games/history/:userId', (req: Request, res: Response) => {
 });
 
 // Admin endpoints
-app.use('/api/admin', createAdminRouter(tableManager));
+app.use('/api/admin', createAdminRouter(tableManager, matchmakingService));
 
 if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, () => {

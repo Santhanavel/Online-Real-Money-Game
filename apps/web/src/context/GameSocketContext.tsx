@@ -6,10 +6,20 @@ import {
   Card,
   CardGroup,
   DealResult,
+  DeclarationInfo,
+  DeclarationResultPayload,
   GameFinalResult,
   GameVariant,
+  MatchmakingStatusPayload,
+  MatchmakingTableUpdatedPayload,
+  MatchmakingTicket,
+  MatchmakingUiState,
   PublicGameState,
   TableConfig,
+  RevealedPlayerHand,
+  PoolScoreboardPayload,
+  PoolSplitRequest,
+  NextDealCountdownPayload,
 } from '@rummy/shared-types';
 
 export interface DrawnCardInfo {
@@ -33,12 +43,27 @@ interface GameSocketContextType {
   myHand: Card[];
   myGroups: CardGroup[];
   isSearching: boolean;
+  matchmakingUiState: MatchmakingUiState;
+  matchmakingTicket: MatchmakingTicket | null;
+  waitingTable: MatchmakingTableUpdatedPayload | null;
+  matchmakingMessage: string | null;
+  matchmakingCountdown: number | null;
   activeTableId: string | null;
   activeTableConfig: TableConfig | null;
   lastDealResult: DealResult | null;
   gameFinalResult: GameFinalResult | null;
   lastDrawnCard: DrawnCardInfo | null;
   opponentDrawEvent: OpponentDrawInfo | null;
+  declarationInfo: DeclarationInfo | null;
+  declarationResult: DeclarationResultPayload | null;
+  hasSubmittedHand: boolean;
+  revealedHands: RevealedPlayerHand[] | null;
+  scoreboard: PoolScoreboardPayload | null;
+  splitRequest: PoolSplitRequest | null;
+  countdownTick: NextDealCountdownPayload | null;
+  requestSplit: () => void;
+  voteSplit: (accept: boolean) => void;
+  requestReentry: () => void;
   isScoreboardOpen: boolean;
   isScoreboardMinimized: boolean;
   openScoreboard: () => void;
@@ -46,13 +71,17 @@ interface GameSocketContextType {
   toggleScoreboard: () => void;
   setIsScoreboardMinimized: (val: boolean) => void;
   errorMessage: string | null;
+  setErrorMessage: (msg: string | null) => void;
   clearError: () => void;
-  joinMatchmaking: (variant: GameVariant, pointValue: number, maxPlayers: 2 | 6) => void;
+  joinMatchmaking: (variant: GameVariant, entryAmount: number, maxPlayers: 2 | 6, pointValue?: number) => void;
   leaveMatchmaking: () => void;
+  cancelMatchmaking: () => void;
+  dismissMatchmakingModal: () => void;
   drawCard: (source: 'CLOSED_DECK' | 'OPEN_DISCARD') => void;
   discardCard: (cardId: string) => void;
   dropDeal: () => void;
   declareHand: (finishCardId: string, groups: { cards: Card[] }[]) => void;
+  submitArrangedHand: (groups: CardGroup[]) => void;
   groupCards: (groups: CardGroup[]) => void;
   resetGame: () => void;
 }
@@ -68,15 +97,30 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [myHand, setMyHand] = useState<Card[]>([]);
   const [myGroups, setMyGroups] = useState<CardGroup[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [matchmakingUiState, setMatchmakingUiState] = useState<MatchmakingUiState>('IDLE');
+  const [matchmakingTicket, setMatchmakingTicket] = useState<MatchmakingTicket | null>(null);
+  const [waitingTable, setWaitingTable] = useState<MatchmakingTableUpdatedPayload | null>(null);
+  const [matchmakingMessage, setMatchmakingMessage] = useState<string | null>(null);
+  const [matchmakingCountdown, setMatchmakingCountdown] = useState<number | null>(null);
+
   const [activeTableId, setActiveTableId] = useState<string | null>(null);
   const [activeTableConfig, setActiveTableConfig] = useState<TableConfig | null>(null);
   const [lastDealResult, setLastDealResult] = useState<DealResult | null>(null);
   const [gameFinalResult, setGameFinalResult] = useState<GameFinalResult | null>(null);
   const [lastDrawnCard, setLastDrawnCard] = useState<DrawnCardInfo | null>(null);
   const [opponentDrawEvent, setOpponentDrawEvent] = useState<OpponentDrawInfo | null>(null);
+  const [declarationInfo, setDeclarationInfo] = useState<DeclarationInfo | null>(null);
+  const [declarationResult, setDeclarationResult] = useState<DeclarationResultPayload | null>(null);
+  const [hasSubmittedHand, setHasSubmittedHand] = useState(false);
   const [isScoreboardOpen, setIsScoreboardOpen] = useState(false);
   const [isScoreboardMinimized, setIsScoreboardMinimized] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Pool Lifecycle & Split states
+  const [revealedHands, setRevealedHands] = useState<RevealedPlayerHand[] | null>(null);
+  const [scoreboard, setScoreboard] = useState<PoolScoreboardPayload | null>(null);
+  const [splitRequest, setSplitRequest] = useState<PoolSplitRequest | null>(null);
+  const [countdownTick, setCountdownTick] = useState<NextDealCountdownPayload | null>(null);
 
   // Initialize or restore player profile on client side without SSR mismatch
   useEffect(() => {
@@ -101,7 +145,11 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setCurrentUser(user);
 
-    const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
+    const serverUrl =
+      process.env.NEXT_PUBLIC_SERVER_URL ||
+      (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+        ? window.location.origin
+        : 'http://localhost:4000');
     const s = io(serverUrl, {
       auth: {
         playerId: user.userId,
@@ -115,6 +163,17 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setIsConnected(true);
       if (activeTableId) {
         s.emit('game:reconnect', { tableId: activeTableId });
+      } else {
+        // Only reconnect matchmaking if explicitly initiated in this browser session
+        const wasInMatchmaking = typeof window !== 'undefined' && sessionStorage.getItem('rummy_in_matchmaking') === 'true';
+        if (wasInMatchmaking) {
+          s.emit('matchmaking:reconnect');
+        } else {
+          // Explicitly clear any dangling previous queue on server so player starts fresh in lobby
+          s.emit('matchmaking:leave');
+          setIsSearching(false);
+          setMatchmakingUiState('IDLE');
+        }
       }
     });
 
@@ -122,12 +181,108 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setIsConnected(false);
     });
 
+    // --- Authoritative Matchmaking Socket Listeners ---
+    s.on('matchmaking:status', (payload: MatchmakingStatusPayload) => {
+      const wasInMatchmaking = typeof window !== 'undefined' && sessionStorage.getItem('rummy_in_matchmaking') === 'true';
+      // If client didn't actively request matchmaking in this session, do not show searching modal
+      if (!wasInMatchmaking && ['SEARCHING', 'PLAYERS_JOINING'].includes(payload.state)) {
+        s.emit('matchmaking:leave');
+        setIsSearching(false);
+        setMatchmakingUiState('IDLE');
+        return;
+      }
+
+      setMatchmakingUiState(payload.state);
+      if (payload.ticket) setMatchmakingTicket(payload.ticket);
+      if (payload.table) setWaitingTable(payload.table);
+      if (payload.message) setMatchmakingMessage(payload.message);
+      if (payload.countdownSec !== undefined) setMatchmakingCountdown(payload.countdownSec);
+
+      if (['SEARCHING', 'PLAYERS_JOINING', 'MATCH_FOUND', 'PREPARING'].includes(payload.state)) {
+        setIsSearching(true);
+      } else if (payload.state === 'STARTED') {
+        if (typeof window !== 'undefined') sessionStorage.removeItem('rummy_in_matchmaking');
+        setTimeout(() => setIsSearching(false), 800);
+      } else if (['CANCELLED', 'EXPIRED', 'FAILED'].includes(payload.state)) {
+        if (typeof window !== 'undefined') sessionStorage.removeItem('rummy_in_matchmaking');
+        setIsSearching(false);
+        setMatchmakingUiState('IDLE');
+      }
+    });
+
+    s.on('matchmaking:table_updated', (tablePayload: MatchmakingTableUpdatedPayload) => {
+      setWaitingTable(tablePayload);
+      setMatchmakingUiState((prev) => {
+        if (prev === 'SEARCHING' || prev === 'PLAYERS_JOINING') {
+          return tablePayload.occupiedSeatCount >= tablePayload.tableCapacity ? 'MATCH_FOUND' : 'PLAYERS_JOINING';
+        }
+        return prev;
+      });
+    });
+
+    // Real-Time Table Events (Requirement 12)
+    const handleRealtimeTableEvent = (eventData: any) => {
+      if (eventData?.seats) {
+        setWaitingTable((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            seats: eventData.seats,
+            occupiedSeatCount: eventData.occupiedSeatCount ?? prev.occupiedSeatCount,
+            tableStatus: eventData.currentTableState ?? prev.tableStatus,
+            gameStartsAt: eventData.applicableDeadline ?? prev.gameStartsAt,
+            countdownSec: eventData.countdownSec ?? prev.countdownSec,
+          };
+        });
+      }
+      if (eventData?.countdownSec !== undefined) {
+        setMatchmakingCountdown(eventData.countdownSec);
+      }
+      if (eventData?.message) {
+        setMatchmakingMessage(eventData.message);
+      }
+    };
+
+    s.on('TABLE_PLAYER_JOINED', handleRealtimeTableEvent);
+    s.on('TABLE_PLAYER_LEFT', handleRealtimeTableEvent);
+    s.on('TABLE_CAPACITY_UPDATED', handleRealtimeTableEvent);
+    s.on('TABLE_FULL', (data: any) => {
+      setMatchmakingUiState('MATCH_FOUND');
+      handleRealtimeTableEvent(data);
+    });
+    s.on('START_COUNTDOWN_STARTED', (data: any) => {
+      setMatchmakingUiState('START_COUNTDOWN');
+      handleRealtimeTableEvent(data);
+    });
+    s.on('START_COUNTDOWN_UPDATED', handleRealtimeTableEvent);
+    s.on('START_COUNTDOWN_CANCELLED', (data: any) => {
+      setMatchmakingUiState('PLAYERS_JOINING');
+      handleRealtimeTableEvent(data);
+    });
+    s.on('TABLE_EXPIRED', (data: any) => {
+      setMatchmakingUiState('EXPIRED');
+      handleRealtimeTableEvent(data);
+    });
+
+    s.on('matchmaking:started', (data: { tableId: string; config: TableConfig }) => {
+      setMatchmakingUiState('STARTED');
+      setActiveTableId(data.tableId);
+      setActiveTableConfig(data.config);
+      setTimeout(() => {
+        setIsSearching(false);
+      }, 600);
+    });
+
     s.on('table:joined', (data: { tableId: string; config: TableConfig }) => {
       setIsSearching(false);
+      setMatchmakingUiState('IDLE');
       setActiveTableId(data.tableId);
       setActiveTableConfig(data.config);
       setLastDealResult(null);
       setGameFinalResult(null);
+      setDeclarationInfo(null);
+      setDeclarationResult(null);
+      setHasSubmittedHand(false);
       setIsScoreboardOpen(false);
       setIsScoreboardMinimized(false);
       setLastDrawnCard(null);
@@ -135,6 +290,9 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     s.on('game:state', (state: PublicGameState) => {
       setPublicState(state);
+      if (state.declarationInfo) {
+        setDeclarationInfo(state.declarationInfo);
+      }
     });
 
     s.on('game:my_hand', (data: { myHand: Card[]; myGroups: CardGroup[] }) => {
@@ -167,14 +325,81 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }, 1500);
     });
 
+    s.on('game:hand_declared_arrange', (info: DeclarationInfo) => {
+      setDeclarationInfo(info);
+    });
+
+    s.on('game:declaration_result', (result: DeclarationResultPayload) => {
+      setDeclarationResult(result);
+    });
+
+    s.on('game:hand_submitted', () => {
+      setHasSubmittedHand(true);
+    });
+
     s.on('game:deal_ended', (data: { dealResult: DealResult; nextRoundStartsAt?: number }) => {
       setLastDealResult(data.dealResult);
+      setDeclarationInfo(null);
       setIsScoreboardOpen(true);
       setIsScoreboardMinimized(false);
     });
 
+    s.on('deal:hands_revealed', (data: { hands: RevealedPlayerHand[] }) => {
+      setRevealedHands(data.hands);
+    });
+
+    s.on('scoreboard:updated', (data: PoolScoreboardPayload) => {
+      setScoreboard(data);
+    });
+
+    s.on('split:requested', (data: PoolSplitRequest) => {
+      setSplitRequest(data);
+    });
+
+    s.on('split:vote_updated', (data: PoolSplitRequest) => {
+      setSplitRequest(data);
+    });
+
+    s.on('split:completed', (data: PoolSplitRequest) => {
+      setSplitRequest(data);
+    });
+
+    s.on('split:declined', () => {
+      setSplitRequest(null);
+      setErrorMessage('Prize split proposal was declined.');
+    });
+
+    s.on('split:expired', () => {
+      setSplitRequest(null);
+    });
+
+    s.on('deal:countdown_tick', (data: NextDealCountdownPayload) => {
+      setCountdownTick(data);
+    });
+
+    s.on('deal:countdown_paused', () => {
+      setCountdownTick((prev) => (prev ? { ...prev, isPaused: true } : null));
+    });
+
+    s.on('deal:started', () => {
+      setLastDealResult(null);
+      setRevealedHands(null);
+      setSplitRequest(null);
+      setCountdownTick(null);
+      setIsScoreboardOpen(false);
+      setIsScoreboardMinimized(false);
+      setDeclarationInfo(null);
+      setDeclarationResult(null);
+      setHasSubmittedHand(false);
+    });
+
+    s.on('game:player_reentered', (data: { playerId: string; newScore: number }) => {
+      setErrorMessage(`Player re-entered with ${data.newScore} points.`);
+    });
+
     s.on('game:completed', (data: { dealResult: DealResult; finalResult?: GameFinalResult }) => {
       setLastDealResult(data.dealResult);
+      setDeclarationInfo(null);
       if (data.finalResult) {
         setGameFinalResult(data.finalResult);
       }
@@ -182,8 +407,14 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setIsScoreboardMinimized(false);
     });
 
-    s.on('error:action_rejected', (data: { message: string }) => {
-      setErrorMessage(data.message);
+    s.on('error:action_rejected', (data: { action?: string; message: string }) => {
+      let friendlyMsg = data.message;
+      if (data.action === 'drop') {
+        friendlyMsg = `Cannot Drop: ${data.message}`;
+      } else if (data.action === 'declare') {
+        friendlyMsg = `Cannot Declare: ${data.message}`;
+      }
+      setErrorMessage(friendlyMsg);
     });
 
     setSocket(s);
@@ -206,20 +437,69 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setIsScoreboardOpen((prev) => !prev);
   };
 
-  const joinMatchmaking = (variant: GameVariant, pointValue: number, maxPlayers: 2 | 6) => {
+  // Periodic heartbeat while matchmaking ticket is active
+  useEffect(() => {
+    if (!socket || !matchmakingTicket || !isSearching) return;
+    if (!['QUEUED', 'RESERVED'].includes(matchmakingTicket.ticketStatus)) return;
+
+    const interval = setInterval(() => {
+      socket.emit('matchmaking:heartbeat', { ticketId: matchmakingTicket.ticketId });
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [socket, matchmakingTicket, isSearching]);
+
+  const joinMatchmaking = (
+    variant: GameVariant,
+    entryAmount: number,
+    maxPlayers: 2 | 6,
+    pointValue?: number
+  ) => {
     if (!socket) return;
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('rummy_in_matchmaking', 'true');
+    }
+    const pv = pointValue !== undefined ? pointValue : entryAmount / 80;
     setIsSearching(true);
+    setMatchmakingUiState('SEARCHING');
+    setMatchmakingMessage('Finding your table...');
+    setWaitingTable(null);
     setLastDealResult(null);
     setGameFinalResult(null);
     setIsScoreboardOpen(false);
     setIsScoreboardMinimized(false);
-    socket.emit('matchmaking:join', { variant, pointValue, maxPlayers });
+    socket.emit('matchmaking:join', { variant, entryAmount, pointValue: pv, maxPlayers });
+  };
+
+  const cancelMatchmaking = () => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('rummy_in_matchmaking');
+    }
+    if (socket) {
+      socket.emit('matchmaking:cancel', { ticketId: matchmakingTicket?.ticketId });
+    }
+    setIsSearching(false);
+    setMatchmakingUiState('IDLE');
+    setMatchmakingMessage(null);
+    setWaitingTable(null);
+    setMatchmakingTicket(null);
   };
 
   const leaveMatchmaking = () => {
-    if (!socket) return;
-    socket.emit('matchmaking:leave');
+    cancelMatchmaking();
+  };
+
+  const dismissMatchmakingModal = () => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('rummy_in_matchmaking');
+    }
+    if (socket) {
+      socket.emit('matchmaking:leave');
+    }
     setIsSearching(false);
+    setMatchmakingUiState('IDLE');
+    setWaitingTable(null);
+    setMatchmakingTicket(null);
   };
 
   const drawCard = (source: 'CLOSED_DECK' | 'OPEN_DISCARD') => {
@@ -242,10 +522,31 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     socket.emit('game:declare', { tableId: activeTableId, finishCardId, groups });
   };
 
+  const submitArrangedHand = (groups: CardGroup[]) => {
+    if (!socket || !activeTableId) return;
+    socket.emit('game:submit_arranged_hand', { tableId: activeTableId, groups });
+    setHasSubmittedHand(true);
+  };
+
   const groupCards = (groups: CardGroup[]) => {
     setMyGroups(groups);
     if (!socket || !activeTableId) return;
     socket.emit('game:group_cards', { tableId: activeTableId, groups });
+  };
+
+  const requestSplit = () => {
+    if (!socket || !activeTableId) return;
+    socket.emit('split:request', { tableId: activeTableId });
+  };
+
+  const voteSplit = (accept: boolean) => {
+    if (!socket || !activeTableId) return;
+    socket.emit('split:vote', { tableId: activeTableId, accept });
+  };
+
+  const requestReentry = () => {
+    if (!socket || !activeTableId) return;
+    socket.emit('pool:reentry', { tableId: activeTableId });
   };
 
   const resetGame = () => {
@@ -256,12 +557,22 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setMyGroups([]);
     setLastDealResult(null);
     setGameFinalResult(null);
+    setDeclarationInfo(null);
+    setDeclarationResult(null);
+    setHasSubmittedHand(false);
     setIsScoreboardOpen(false);
     setIsScoreboardMinimized(false);
     setLastDrawnCard(null);
+    setRevealedHands(null);
+    setScoreboard(null);
+    setSplitRequest(null);
+    setCountdownTick(null);
   };
 
-  const clearError = () => setErrorMessage(null);
+  const clearError = () => {
+    setErrorMessage(null);
+    setDeclarationResult(null);
+  };
 
   return (
     <GameSocketContext.Provider
@@ -274,12 +585,27 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         myHand,
         myGroups,
         isSearching,
+        matchmakingUiState,
+        matchmakingTicket,
+        waitingTable,
+        matchmakingMessage,
+        matchmakingCountdown,
         activeTableId,
         activeTableConfig,
         lastDealResult,
         gameFinalResult,
         lastDrawnCard,
         opponentDrawEvent,
+        declarationInfo,
+        declarationResult,
+        hasSubmittedHand,
+        revealedHands,
+        scoreboard,
+        splitRequest,
+        countdownTick,
+        requestSplit,
+        voteSplit,
+        requestReentry,
         isScoreboardOpen,
         isScoreboardMinimized,
         openScoreboard,
@@ -287,13 +613,17 @@ export const GameSocketProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         toggleScoreboard,
         setIsScoreboardMinimized,
         errorMessage,
+        setErrorMessage,
         clearError,
         joinMatchmaking,
         leaveMatchmaking,
+        cancelMatchmaking,
+        dismissMatchmakingModal,
         drawCard,
         discardCard,
         dropDeal,
         declareHand,
+        submitArrangedHand,
         groupCards,
         resetGame,
       }}

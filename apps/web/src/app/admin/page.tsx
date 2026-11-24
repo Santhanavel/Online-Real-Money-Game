@@ -8,24 +8,27 @@ export default function AdminPage() {
   const [players, setPlayers] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'TABLES' | 'PLAYERS' | 'LOGS'>('OVERVIEW');
+  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'MATCHMAKING' | 'TABLES' | 'PLAYERS' | 'LOGS'>('OVERVIEW');
+  const [mmStats, setMmStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
 
   const fetchData = async () => {
     try {
-      const [ovRes, tblRes, plyRes, logRes] = await Promise.all([
+      const [ovRes, tblRes, plyRes, logRes, mmRes] = await Promise.all([
         fetch(`${serverUrl}/api/admin/overview`).then((r) => r.json()),
         fetch(`${serverUrl}/api/admin/tables`).then((r) => r.json()),
         fetch(`${serverUrl}/api/admin/players`).then((r) => r.json()),
         fetch(`${serverUrl}/api/admin/audit-logs`).then((r) => r.json()),
+        fetch(`${serverUrl}/api/admin/matchmaking/stats`).then((r) => r.json()).catch(() => null),
       ]);
 
       setOverview(ovRes);
       setTables(Array.isArray(tblRes) ? tblRes : []);
       setPlayers(Array.isArray(plyRes) ? plyRes : []);
       setAuditLogs(Array.isArray(logRes) ? logRes : []);
+      setMmStats(mmRes);
       setLoading(false);
     } catch (err) {
       console.error('Failed to load admin data:', err);
@@ -76,8 +79,8 @@ export default function AdminPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex bg-slate-900/80 p-1.5 rounded-xl border border-white/10 mb-8 max-w-lg">
-        {(['OVERVIEW', 'TABLES', 'PLAYERS', 'LOGS'] as const).map((tab) => (
+      <div className="flex bg-slate-900/80 p-1.5 rounded-xl border border-white/10 mb-8 max-w-2xl">
+        {(['OVERVIEW', 'MATCHMAKING', 'TABLES', 'PLAYERS', 'LOGS'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -119,9 +122,9 @@ export default function AdminPage() {
                   </span>
                 </div>
                 <div className="bg-slate-900/80 p-5 rounded-2xl border border-white/10">
-                  <span className="text-xs text-slate-400 block mb-1">Server Health</span>
+                  <span className="text-xs text-slate-400 block mb-1">Active Queue Tickets</span>
                   <span className="text-3xl font-black text-emerald-300">
-                    {overview?.serverStatus || 'ONLINE'}
+                    {mmStats?.totalActiveTickets || 0}
                   </span>
                 </div>
               </div>
@@ -142,6 +145,125 @@ export default function AdminPage() {
                     </span>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: MATCHMAKING LIVE MONITOR */}
+          {activeTab === 'MATCHMAKING' && (
+            <div className="space-y-6">
+              {/* Ticket Status Counters */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+                <div className="bg-slate-900/80 p-4 rounded-xl border border-white/10 text-center">
+                  <span className="text-[11px] text-slate-400 block mb-1">Waiting in Queue</span>
+                  <span className="text-2xl font-black text-amber-300">
+                    {mmStats?.ticketsByStatus?.QUEUED || 0}
+                  </span>
+                </div>
+                <div className="bg-slate-900/80 p-4 rounded-xl border border-white/10 text-center">
+                  <span className="text-[11px] text-slate-400 block mb-1">Seats Reserved</span>
+                  <span className="text-2xl font-black text-emerald-400">
+                    {mmStats?.ticketsByStatus?.RESERVED || 0}
+                  </span>
+                </div>
+                <div className="bg-slate-900/80 p-4 rounded-xl border border-white/10 text-center">
+                  <span className="text-[11px] text-slate-400 block mb-1">Match Found</span>
+                  <span className="text-2xl font-black text-teal-300">
+                    {mmStats?.ticketsByStatus?.MATCH_FOUND || 0}
+                  </span>
+                </div>
+                <div className="bg-slate-900/80 p-4 rounded-xl border border-white/10 text-center">
+                  <span className="text-[11px] text-slate-400 block mb-1">Matches Started</span>
+                  <span className="text-2xl font-black text-blue-400">
+                    {mmStats?.ticketsByStatus?.STARTED || 0}
+                  </span>
+                </div>
+                <div className="bg-slate-900/80 p-4 rounded-xl border border-white/10 text-center">
+                  <span className="text-[11px] text-slate-400 block mb-1">Cancelled</span>
+                  <span className="text-2xl font-black text-slate-400">
+                    {mmStats?.ticketsByStatus?.CANCELLED || 0}
+                  </span>
+                </div>
+                <div className="bg-slate-900/80 p-4 rounded-xl border border-white/10 text-center">
+                  <span className="text-[11px] text-slate-400 block mb-1">Expired</span>
+                  <span className="text-2xl font-black text-red-400">
+                    {mmStats?.ticketsByStatus?.EXPIRED || 0}
+                  </span>
+                </div>
+              </div>
+
+              {/* Waiting Tables List */}
+              <div className="bg-slate-900/80 rounded-2xl border border-white/10 p-5 shadow-xl">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-base font-bold text-amber-200">
+                    Authoritative Waiting Tables ({mmStats?.activeWaitingTablesCount || 0})
+                  </h3>
+                  <span className="text-xs text-slate-400">Auto-refreshed every 4s</span>
+                </div>
+
+                {!mmStats?.activeWaitingTables || mmStats.activeWaitingTables.length === 0 ? (
+                  <div className="text-center py-10 text-slate-400 text-xs">
+                    No active waiting tables currently filling.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {mmStats.activeWaitingTables.map((tbl: any) => (
+                      <div
+                        key={tbl.tableId}
+                        className="bg-black/40 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3"
+                      >
+                        <div>
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <span className="text-xs font-bold text-amber-300 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">
+                              {tbl.variant === 'POINTS_240' ? '240 Out for 241' : tbl.variant}
+                            </span>
+                            <span className="text-xs font-bold text-emerald-400 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20">
+                              Entry: ₹{tbl.entryAmount || 50}
+                            </span>
+                            <span className="text-xs text-slate-300 font-semibold">
+                              {tbl.capacity}P Table
+                            </span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                              {tbl.status}
+                            </span>
+                            {tbl.isLocked && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                🔒 LOCKED
+                              </span>
+                            )}
+                            {tbl.countdownSec !== null && tbl.countdownSec !== undefined && tbl.countdownSec > 0 && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 animate-pulse border border-amber-500/30">
+                                ⏳ Launching in {tbl.countdownSec}s
+                              </span>
+                            )}
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              (Timeout in {tbl.remainingSec}s)
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-mono text-slate-500">
+                            ID: {tbl.tableId}
+                          </span>
+                        </div>
+
+                        {/* Seated Pods */}
+                        <div className="flex items-center gap-2">
+                          {tbl.seats.map((seat: any) => (
+                            <div
+                              key={seat.seatIndex}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                                seat.isOccupied
+                                  ? 'bg-emerald-950 border-emerald-500/50 text-emerald-300'
+                                  : 'bg-slate-900 border-slate-800 text-slate-600 border-dashed'
+                              }`}
+                            >
+                              {seat.isOccupied ? `S${seat.seatIndex + 1}: ${seat.username}` : `S${seat.seatIndex + 1}: Empty`}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

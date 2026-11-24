@@ -1,8 +1,9 @@
 import { Request, Response, Router } from 'express';
 import { DatabaseService } from '../db/schema';
+import { MatchmakingService } from '../matchmaking/MatchmakingService';
 import { TableManager } from '../table/TableManager';
 
-export function createAdminRouter(tableManager: TableManager): Router {
+export function createAdminRouter(tableManager: TableManager, matchmakingService?: MatchmakingService): Router {
   const router = Router();
   const db = DatabaseService.getInstance();
 
@@ -13,6 +14,7 @@ export function createAdminRouter(tableManager: TableManager): Router {
 
     const pointsGamesCount = completedResults.filter((r) => r.variant === 'POINTS').length;
     const poolGamesCount = completedResults.filter((r) => r.variant.startsWith('POOL')).length;
+    const matchmakingStats = matchmakingService ? matchmakingService.getMatchmakingStats() : null;
 
     res.json({
       totalUsers: db.users.size,
@@ -22,7 +24,22 @@ export function createAdminRouter(tableManager: TableManager): Router {
       poolGamesCount,
       serverStatus: 'HEALTHY',
       uptimeSec: Math.floor(process.uptime()),
+      matchmaking: matchmakingStats,
     });
+  });
+
+  // Matchmaking live monitoring
+  router.get('/matchmaking/stats', (req: Request, res: Response) => {
+    if (!matchmakingService) return res.status(503).json({ error: 'Matchmaking service not available' });
+    res.json(matchmakingService.getMatchmakingStats());
+  });
+
+  router.get('/matchmaking/events', (req: Request, res: Response) => {
+    res.json(db.matchmakingEvents);
+  });
+
+  router.get('/matchmaking/tickets', (req: Request, res: Response) => {
+    res.json(Array.from(db.matchmakingTickets.values()));
   });
 
   // Active game tables

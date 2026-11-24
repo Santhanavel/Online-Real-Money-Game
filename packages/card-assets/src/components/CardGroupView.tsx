@@ -7,10 +7,14 @@ export interface CardGroupViewProps {
   selectedCardIds: Set<string>;
   wildJokerCard?: Card | null;
   newlyPickedCardId?: string | null;
+  draggedCardId?: string | null;
+  isDragOverTarget?: boolean;
   onCardClick?: (card: Card) => void;
   onCardDragStart?: (e: React.DragEvent, card: Card, groupId: string) => void;
-  onCardDragOver?: (e: React.DragEvent) => void;
-  onCardDrop?: (e: React.DragEvent, targetGroupId: string) => void;
+  onCardDragOver?: (e: React.DragEvent, groupId: string, cardIndex?: number) => void;
+  onCardDrop?: (e: React.DragEvent, targetGroupId: string, cardIndex?: number) => void;
+  onCardPointerDown?: (e: React.PointerEvent, card: Card, groupId: string) => void;
+  onMoveSelectedHere?: (targetGroupId: string) => void;
   size?: 'sm' | 'md' | 'lg';
   className?: string;
   points?: number;
@@ -21,89 +25,75 @@ export const CardGroupView: React.FC<CardGroupViewProps> = ({
   selectedCardIds,
   wildJokerCard,
   newlyPickedCardId,
+  draggedCardId,
+  isDragOverTarget = false,
   onCardClick,
   onCardDragStart,
   onCardDragOver,
   onCardDrop,
+  onCardPointerDown,
+  onMoveSelectedHere,
   size = 'md',
   className = '',
   points = 0,
 }) => {
-  const getBadgeStyle = (meldType?: MeldType) => {
+  // RummyCulture-style compact status tags (subtle, non-dominating)
+  const getBadgeConfig = (meldType?: MeldType) => {
     switch (meldType) {
       case 'PURE_SEQUENCE':
         return {
-          bg: '#059669', // Emerald
+          bg: '#047857', // Emerald
           text: '#ECFDF5',
-          label: '✓ Pure Seq',
-          border: '1px solid #34D399',
-          boxGlow: '0 0 12px rgba(16, 185, 129, 0.35)',
+          label: 'Pure Seq',
+          border: '1px solid rgba(52, 211, 153, 0.5)',
+          isPure: true,
         };
       case 'IMPURE_SEQUENCE':
         return {
-          bg: '#2563EB', // Blue
+          bg: '#1D4ED8', // Deep Blue
           text: '#EFF6FF',
-          label: '✓ Impure Seq',
-          border: '1px solid #60A5FA',
-          boxGlow: '0 0 12px rgba(59, 130, 246, 0.35)',
+          label: 'Impure Seq',
+          border: '1px solid rgba(96, 165, 250, 0.5)',
+          isPure: false,
         };
       case 'SET':
         return {
-          bg: '#D97706', // Amber
+          bg: '#B45309', // Warm Amber
           text: '#FFFBEB',
-          label: '✓ Valid Set',
-          border: '1px solid #FBBF24',
-          boxGlow: '0 0 12px rgba(245, 158, 11, 0.35)',
+          label: 'Set',
+          border: '1px solid rgba(251, 191, 36, 0.5)',
+          isPure: false,
         };
       case 'INVALID':
       default:
         return {
-          bg: '#334155', // Slate
-          text: '#F8FAFC',
-          label: points > 0 ? `Invalid (${points} pts)` : 'Invalid Group',
-          border: '1px solid #64748B',
-          boxGlow: 'none',
+          bg: 'rgba(30, 41, 59, 0.85)', // Subtle Slate
+          text: '#94A3B8',
+          label: points > 0 ? `${points} pts` : 'Ungrouped',
+          border: '1px solid rgba(100, 116, 139, 0.3)',
+          isPure: false,
         };
     }
   };
 
-  const badge = getBadgeStyle(group.meldType);
-  // Balanced overlap so Rank & Suit on left margin remain completely visible!
-  const cardOverlap = size === 'sm' ? -22 : size === 'md' ? -30 : -38;
+  const badge = getBadgeConfig(group.meldType);
+  // Tightly matched overlap leaving ~22px left index visible for rank and suit (matches RummyCulture reference)
+  const cardOverlap = size === 'sm' ? -36 : size === 'md' ? -48 : -60;
 
   return (
     <div
-      onDragOver={onCardDragOver}
-      onDrop={(e) => onCardDrop && onCardDrop(e, group.id)}
-      style={{
-        boxShadow: badge.boxGlow,
-        border: badge.border,
-      }}
-      className={`inline-flex flex-col items-center p-2 rounded-2xl bg-black/50 backdrop-blur-md transition-all duration-200 select-none ${className}`}
+      data-drop-zone="group"
+      data-group-id={group.id}
+      className={`inline-flex flex-col items-center px-0.5 py-0 select-none relative ${
+        isDragOverTarget ? 'ring-2 ring-amber-400/80 rounded-lg' : ''
+      } ${className}`}
     >
-      {/* Group Meld Status Tag */}
-      <div
-        style={{
-          backgroundColor: badge.bg,
-          color: badge.text,
-          fontSize: '11px',
-          fontWeight: 800,
-          padding: '2px 10px',
-          borderRadius: '9999px',
-          marginBottom: '6px',
-          letterSpacing: '0.03em',
-          boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
-        }}
-        className="flex items-center gap-1 shadow-md"
-      >
-        <span>{badge.label}</span>
-      </div>
-
-      {/* Cards Row (RummyCulture style overlapping cascade) */}
-      <div className="flex items-center px-1 py-1">
+      {/* Cards Row with controlled cascading overlap */}
+      <div className="flex items-center px-0 pt-0 pb-0 touch-manipulation">
         {group.cards.map((card, idx) => {
           const isSelected = selectedCardIds.has(card.cardId);
           const isNewlyPicked = newlyPickedCardId === card.cardId;
+          const isBeingDragged = draggedCardId === card.cardId;
           const isWild =
             wildJokerCard !== null &&
             wildJokerCard !== undefined &&
@@ -113,19 +103,21 @@ export const CardGroupView: React.FC<CardGroupViewProps> = ({
           return (
             <div
               key={card.cardId}
-              draggable
-              onDragStart={(e) => onCardDragStart && onCardDragStart(e, card, group.id)}
+              onPointerDown={(e) => onCardPointerDown && onCardPointerDown(e, card, group.id)}
               style={{
                 marginLeft: idx === 0 ? 0 : `${cardOverlap}px`,
-                zIndex: isSelected ? 30 : isNewlyPicked ? 25 : idx + 1,
+                zIndex: isSelected ? 30 : idx + 1,
+                opacity: isBeingDragged ? 0 : 1,
+                visibility: isBeingDragged ? 'hidden' : 'visible',
               }}
-              className="transition-transform duration-150 ease-out cursor-pointer hover:z-20"
+              className="transition-transform duration-100 ease-out cursor-pointer touch-none select-none"
             >
               <PlayingCard
                 card={card}
                 isWildJoker={isWild}
                 isSelected={isSelected}
                 isNewlyPicked={isNewlyPicked}
+                isDragging={isBeingDragged}
                 size={size}
                 onClick={() => onCardClick && onCardClick(card)}
               />
